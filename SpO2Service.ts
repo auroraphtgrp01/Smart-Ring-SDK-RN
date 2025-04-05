@@ -15,8 +15,9 @@ import {
 // Tạo đăng ký callback để nhận dữ liệu SpO2 trực tiếp
 export const setupRealDataCallback = async (
   device: Device | null,
-  handleData: (data: number[]) => void,
-  logCallback: (message: string) => void
+  handleData: (data: number[], setMeasuring?: (measuring: boolean) => void) => void,
+  logCallback: (message: string) => void,
+  setMeasuring?: (measuring: boolean) => void
 ): Promise<any[]> => {
   if (!device) return [];
   
@@ -54,7 +55,7 @@ export const setupRealDataCallback = async (
                   logCallback(` Dữ liệu từ ${char.uuid}: ${Array.from(data).map(b => b.toString(16).padStart(2, '0')).join(' ')}`);
                   
                   // Xử lý dữ liệu từ các đặc tính khác
-                  handleData(Array.from(data));
+                  handleData(Array.from(data), setMeasuring);
                 }
               }
             );
@@ -119,54 +120,64 @@ export const stopSpO2Measurement = async (
   notificationSubscription: any,
   setNotificationSubscription: (subscription: any) => void,
   pollingIntervalId: NodeJS.Timeout | null,
-  setPollingIntervalId: (intervalId: NodeJS.Timeout | null) => void,
+  setPollingIntervalId: (id: NodeJS.Timeout | null) => void,
   setMeasuring: (measuring: boolean) => void,
   spo2Value: number | null,
   addLog: (message: string) => void
 ) => {
-  if (!device || !measuring) {
+  // Đảm bảo dừng trạng thái đo ngay lập tức
+  setMeasuring(false);
+  
+  // Hủy polling interval nếu có
+  if (pollingIntervalId) {
+    clearInterval(pollingIntervalId);
+    setPollingIntervalId(null);
+    addLog("✓ Đã hủy polling interval");
+  }
+  
+  // Hủy đăng ký thông báo nếu có
+  if (notificationSubscription) {
+    notificationSubscription.remove();
+    setNotificationSubscription(null);
+    addLog("✓ Đã hủy đăng ký notifications");
+  }
+  
+  if (!device) {
+    addLog("❌ Không có thiết bị để dừng đo!");
     return;
   }
-
+  
   try {
-    // Gửi lệnh dừng đo SpO2 (tương đương với YCBTClient.appStartMeasurement(0, 2, ...))
-    // Tham số: 0 = tắt, 2 = SpO2 (Constants.MeasureType.BloodOxygen = 2)
+    // Kiểm tra xem thiết bị có thực sự được kết nối không
+    let isConnected = false;
+    try {
+      isConnected = await device.isConnected();
+    } catch (error) {
+      addLog(`❌ Thiết bị đã mất kết nối khi cố gắng dừng đo: ${error}`);
+      return;
+    }
+    
+    if (!isConnected) {
+      addLog("❌ Thiết bị không còn kết nối khi dừng đo");
+      return;
+    }
+    
+    // Gửi lệnh dừng đo SpO2
     addLog("Đã gửi lệnh dừng đo SpO2");
     await device.writeCharacteristicWithResponseForService(
       SERVICE_UUID,
       WRITE_UUID,
       base64.fromByteArray(new Uint8Array(SPO2_STOP_COMMAND))
     );
-
-    // Hủy bỏ đăng ký notification
-    if (notificationSubscription) {
-      notificationSubscription.remove();
-      setNotificationSubscription(null);
-      addLog("✅ Đã hủy đăng ký nhận thông báo");
-    }
-
-    // Xóa interval nếu có
-    if (pollingIntervalId) {
-      clearInterval(pollingIntervalId);
-      setPollingIntervalId(null);
-      addLog("✅ Đã dừng polling dữ liệu");
-    }
-
-    // Cập nhật trạng thái
-    setMeasuring(false);
-
-    // Hiển thị thông báo nếu không nhận được kết quả
-    if (spo2Value === null) {
-      addLog("⚠️ Chưa nhận được giá trị SpO2 hợp lệ!");
-      Alert.alert("Không có dữ liệu", "Không nhận được kết quả đo SpO2 hợp lệ. Vui lòng thử lại.");
-    } else {
-      addLog(`✅ Kết thúc đo với giá trị SpO2: ${spo2Value}%`);
-    }
     
-    return true;
+    addLog("✅ Đã dừng đo SpO2!");
+    
+    // Hiển thị kết quả nếu có
+    if (spo2Value !== null) {
+      addLog(`📊 Kết quả đo SpO2: ${spo2Value}%`);
+    }
   } catch (error) {
     addLog(`❌ Lỗi khi dừng đo SpO2: ${error}`);
-    return false;
   }
 };
 
@@ -177,7 +188,8 @@ export const handleData = (
   setPrValue: (value: number | null) => void,
   setDataBuffer: (buffer: number[][]) => void,
   dataBuffer: number[][],
-  addLog: (message: string) => void
+  addLog: (message: string) => void,
+  setMeasuring?: (measuring: boolean) => void
 ) => {
   if (!data || data.length === 0) {
     addLog("❌ Dữ liệu rỗng!");
@@ -196,6 +208,8 @@ export const handleData = (
     if (spo2Value >= BLOOD_OXYGEN_VISIBLE_MIN && spo2Value <= BLOOD_OXYGEN_VISIBLE_MAX) {
       addLog(`✅ Phát hiện dữ liệu SpO2 1 byte: ${spo2Value}%`);
       setSpo2Value(spo2Value);
+      // Auto-stop measurement when valid data is received
+      if (setMeasuring) setMeasuring(false);
       Alert.alert("Kết quả đo SpO2", `Chỉ số SpO2 của bạn là: ${spo2Value}%`);
       return;
     } else {
@@ -213,6 +227,8 @@ export const handleData = (
       addLog(`🔍 Tìm thấy giá trị có thể là SpO2 tại vị trí 4: ${spo2Value}%`);
       setSpo2Value(spo2Value);
       addLog(`✅ Sử dụng giá trị SpO2: ${spo2Value}%`);
+      // Auto-stop measurement when valid data is received
+      if (setMeasuring) setMeasuring(false);
       Alert.alert("Kết quả đo SpO2", `Chỉ số SpO2 của bạn là: ${spo2Value}%`);
       return;
     }
@@ -227,6 +243,8 @@ export const handleData = (
     if (spo2Value >= BLOOD_OXYGEN_VISIBLE_MIN && spo2Value <= BLOOD_OXYGEN_VISIBLE_MAX) {
       addLog(`✅ Giá trị SpO2 nhận được từ gói Real-time (3, 62): ${spo2Value}%`);
       setSpo2Value(spo2Value);
+      // Auto-stop measurement when valid data is received
+      if (setMeasuring) setMeasuring(false);
       Alert.alert("Kết quả đo SpO2", `Chỉ số SpO2 của bạn là: ${spo2Value}%`);
       return;
     } else {
@@ -311,6 +329,8 @@ export const handleData = (
         // Nếu byte[6] có vẻ hợp lệ, sử dụng nó
         addLog(`✅ Giá trị SpO2 từ byte[6]: ${possibleSpo2Value}%`);
         setSpo2Value(possibleSpo2Value);
+        // Auto-stop measurement when valid data is received
+        if (setMeasuring) setMeasuring(false);
         Alert.alert("Kết quả đo SpO2", `Chỉ số SpO2 của bạn là: ${possibleSpo2Value}%`);
         return;
       } else {
@@ -321,6 +341,8 @@ export const handleData = (
         if (javaStyleValue >= BLOOD_OXYGEN_VISIBLE_MIN && javaStyleValue <= BLOOD_OXYGEN_VISIBLE_MAX) {
           addLog(`✅ Giá trị SpO2 từ byte[0]: ${javaStyleValue}%`);
           setSpo2Value(javaStyleValue);
+          // Auto-stop measurement when valid data is received
+          if (setMeasuring) setMeasuring(false);
           Alert.alert("Kết quả đo SpO2", `Chỉ số SpO2 của bạn là: ${javaStyleValue}%`);
           return;
         }
@@ -331,6 +353,8 @@ export const handleData = (
         if (originalValue >= BLOOD_OXYGEN_VISIBLE_MIN && originalValue <= BLOOD_OXYGEN_VISIBLE_MAX) {
           addLog(`✅ Giá trị SpO2 từ byte[5]: ${originalValue}%`);
           setSpo2Value(originalValue);
+          // Auto-stop measurement when valid data is received
+          if (setMeasuring) setMeasuring(false);
           Alert.alert("Kết quả đo SpO2", `Chỉ số SpO2 của bạn là: ${originalValue}%`);
           return;
         }
@@ -357,7 +381,8 @@ export const setupPollingMechanism = (
   setPrValue: (value: number | null) => void,
   setDataBuffer: (buffer: number[][]) => void,
   dataBuffer: number[][],
-  addLog: (message: string) => void
+  addLog: (message: string) => void,
+  setMeasuring?: (measuring: boolean) => void
 ) => {
   addLog('Thiết lập cơ chế polling để đọc dữ liệu...');
   
@@ -365,7 +390,7 @@ export const setupPollingMechanism = (
   const pollInterval = setInterval(async () => {
     if (measuring) {
       try {
-        await pollData(device, notifyCharacteristic, measuring, setSpo2Value, setPrValue, setDataBuffer, dataBuffer, addLog);
+        await pollData(device, notifyCharacteristic, measuring, setSpo2Value, setPrValue, setDataBuffer, dataBuffer, addLog, setMeasuring);
       } catch (error) {
         // Bỏ qua lỗi để tiếp tục polling
       }
@@ -384,7 +409,8 @@ export const pollData = async (
   setPrValue: (value: number | null) => void,
   setDataBuffer: (buffer: number[][]) => void,
   dataBuffer: number[][],
-  addLog: (message: string) => void
+  addLog: (message: string) => void,
+  setMeasuring?: (measuring: boolean) => void
 ) => {
   if (!device || !notifyCharacteristic) {
     addLog('Không thể đọc dữ liệu. Không có thiết bị hoặc characteristic!');
@@ -413,6 +439,7 @@ export const pollData = async (
     if (spo2Index !== -1) {
       addLog(`🟢 Polling: Tìm thấy giá trị SpO2 = 96% tại vị trí ${spo2Index}`);
       setSpo2Value(96);
+      if (setMeasuring) setMeasuring(false);
 
       // Hiển thị thông báo
       Alert.alert(
@@ -425,7 +452,7 @@ export const pollData = async (
     }
 
     // Nếu không tìm thấy giá trị 96, xử lý dữ liệu thông qua hàm handleData
-    handleData(byteArray, setSpo2Value, setPrValue, setDataBuffer, dataBuffer, addLog);
+    handleData(byteArray, setSpo2Value, setPrValue, setDataBuffer, dataBuffer, addLog, setMeasuring);
   } catch (error) {
     // Bỏ qua lỗi khi polling để tiếp tục quá trình
   }
@@ -441,7 +468,8 @@ export const setupAlternativeNotificationMethod = async (
   setPrValue: (value: number | null) => void,
   setDataBuffer: (buffer: number[][]) => void,
   dataBuffer: number[][],
-  addLog: (message: string) => void
+  addLog: (message: string) => void,
+  setMeasuring?: (measuring: boolean) => void
 ): Promise<boolean> => {
   if (!device || !notifyCharacteristic) {
     addLog('❌ Không thể thiết lập phương pháp thay thế. Không có thiết bị hoặc characteristic!');
@@ -482,7 +510,7 @@ export const setupAlternativeNotificationMethod = async (
             const bytes = base64.toByteArray(characteristic.value);
             const byteArray = Array.from(bytes);
             addLog(`📊 Dữ liệu toggle: ${byteArray.map(b => b.toString(16).padStart(2, '0')).join(' ')}`);
-            handleData(byteArray, setSpo2Value, setPrValue, setDataBuffer, dataBuffer, addLog);
+            handleData(byteArray, setSpo2Value, setPrValue, setDataBuffer, dataBuffer, addLog, setMeasuring);
           }
         }
       );
@@ -516,7 +544,7 @@ export const startSpO2Measurement = async (
 ) => {
   if (!device) {
     addLog("❌ Chưa kết nối với thiết bị!");
-    return;
+    return false;
   }
 
   try {
@@ -526,8 +554,19 @@ export const startSpO2Measurement = async (
 
     // Hủy đăng ký thông báo cũ nếu có
     if (notificationSubscription) {
-      notificationSubscription.remove();
+      try {
+        notificationSubscription.remove();
+        addLog("✓ Đã hủy đăng ký thông báo cũ");
+      } catch (error) {
+        addLog(`⚠️ Lỗi khi hủy đăng ký thông báo cũ: ${error}`);
+        // Tiếp tục ngay cả khi có lỗi
+      }
+      // Đảm bảo đặt lại giá trị subscription
+      setNotificationSubscription(null);
     }
+
+    // Đợi một chút để đảm bảo các hoạt động Bluetooth trước đó đã hoàn tất
+    await new Promise(resolve => setTimeout(resolve, 500));
 
     // 1. Đảm bảo notifications đã được kích hoạt - QUAN TRỌNG
     addLog("🔄 Thiết lập lắng nghe notifications...");
@@ -541,57 +580,92 @@ export const startSpO2Measurement = async (
       // Tiếp tục ngay cả khi lỗi
     }
 
-    // 2. Đăng ký lắng nghe notifications - TỐI QUAN TRỌNG
-    // Tương đương với registerRealDataCallBack trong Java
-    const subscription = device.monitorCharacteristicForService(
-      SERVICE_UUID,
-      NOTIFY_UUID,
-      (error, characteristic) => {
-        if (error) {
-          addLog(`❌ Lỗi khi lắng nghe notifications: ${error}`);
-          return;
-        }
-
-        if (characteristic && characteristic.value) {
-          const data = Array.from(base64.toByteArray(characteristic.value));
-          const hexData = data.map(b => b.toString(16).padStart(2, '0')).join(' ');
-          addLog(`📊 Nhận notification: ${hexData}`);
-          handleData(data, setSpo2Value, setPrValue, setDataBuffer, dataBuffer, addLog);
-        }
-      }
-    );
-
-    // Lưu subscription để có thể hủy sau này
-    setNotificationSubscription(subscription);
-    addLog("✅ Đã đăng ký lắng nghe dữ liệu từ thiết bị thành công!");
-
-    // Đợi một chút để đảm bảo notifications đã được kích hoạt
+    // Đợi một chút để đảm bảo các hoạt động Bluetooth trước đó đã hoàn tất
     await new Promise(resolve => setTimeout(resolve, 300));
 
+    // 2. Đăng ký lắng nghe notifications - TỐI QUAN TRỌNG
+    // Tương đương với registerRealDataCallBack trong Java
+    let subscription;
+    try {
+      subscription = device.monitorCharacteristicForService(
+        SERVICE_UUID,
+        NOTIFY_UUID,
+        (error, characteristic) => {
+          if (error) {
+            // Xử lý lỗi "Operation was cancelled" một cách đặc biệt
+            if (error.message && error.message.includes("cancelled")) {
+              addLog(`⚠️ Thông báo bị hủy: ${error.message}`);
+              return; // Không xử lý lỗi này như một lỗi nghiêm trọng
+            }
+            
+            addLog(`❌ Lỗi khi lắng nghe notifications: ${error}`);
+            return;
+          }
+
+          if (characteristic && characteristic.value) {
+            const data = Array.from(base64.toByteArray(characteristic.value));
+            const hexData = data.map(b => b.toString(16).padStart(2, '0')).join(' ');
+            addLog(`📊 Nhận notification: ${hexData}`);
+            handleData(data, setSpo2Value, setPrValue, setDataBuffer, dataBuffer, addLog, setMeasuring);
+          }
+        }
+      );
+
+      // Lưu subscription để có thể hủy sau này
+      setNotificationSubscription(subscription);
+      addLog("✅ Đã đăng ký lắng nghe dữ liệu từ thiết bị thành công!");
+    } catch (error) {
+      // Xử lý lỗi "Operation was cancelled" một cách đặc biệt
+      const monitorError = error as any;
+      if (monitorError && monitorError.message && typeof monitorError.message === 'string' && monitorError.message.includes("cancelled")) {
+        addLog(`⚠️ Đăng ký thông báo bị hủy: ${monitorError.message}`);
+        // Tiếp tục thử gửi lệnh đo ngay cả khi đăng ký thông báo bị hủy
+      } else {
+        addLog(`❌ Lỗi khi đăng ký lắng nghe notifications: ${error}`);
+        setMeasuring(false);
+        return false;
+      }
+    }
+
+    // Đợi một chút để đảm bảo notifications đã được kích hoạt
+    await new Promise(resolve => setTimeout(resolve, 500));
+
     // 3. Gửi lệnh chuẩn bị đo SpO2 (tương đương với YCBTClient.appPrepareBloodOxygen)
-    addLog("Đã gửi lệnh chuẩn bị đo SpO2 (Prepare SpO2)");
-    await device.writeCharacteristicWithResponseForService(
-      SERVICE_UUID,
-      WRITE_UUID,
-      base64.fromByteArray(new Uint8Array(SPO2_PREPARE_COMMAND))
-    );
+    try {
+      addLog("Đã gửi lệnh chuẩn bị đo SpO2 (Prepare SpO2)");
+      await device.writeCharacteristicWithResponseForService(
+        SERVICE_UUID,
+        WRITE_UUID,
+        base64.fromByteArray(new Uint8Array(SPO2_PREPARE_COMMAND))
+      );
+    } catch (prepareError) {
+      addLog(`❌ Lỗi khi gửi lệnh chuẩn bị: ${prepareError}`);
+      // Vẫn tiếp tục thử gửi lệnh bắt đầu đo
+    }
 
     // Chờ một chút
     await new Promise(resolve => setTimeout(resolve, 500));
 
     // 4. Gửi lệnh bắt đầu đo SpO2 (tương đương với YCBTClient.appStartMeasurement(1, 2, ...))
     // Tham số: 1 = bật, 2 = SpO2 (Constants.MeasureType.BloodOxygen = 2)
-    addLog("Đã gửi lệnh bắt đầu đo SpO2 (StartMeasurement)");
-    await device.writeCharacteristicWithResponseForService(
-      SERVICE_UUID,
-      WRITE_UUID,
-      base64.fromByteArray(new Uint8Array(SPO2_START_COMMAND))
-    );
+    try {
+      addLog("Đã gửi lệnh bắt đầu đo SpO2 (StartMeasurement)");
+      await device.writeCharacteristicWithResponseForService(
+        SERVICE_UUID,
+        WRITE_UUID,
+        base64.fromByteArray(new Uint8Array(SPO2_START_COMMAND))
+      );
 
-    addLog("✅ Đã bắt đầu đo SpO2!");
-    return true;
+      addLog("✅ Đã bắt đầu đo SpO2!");
+      return true;
+    } catch (startError) {
+      addLog(`❌ Lỗi khi gửi lệnh bắt đầu đo: ${startError}`);
+      setMeasuring(false);
+      return false;
+    }
   } catch (error) {
     addLog(`❌ Lỗi khi bắt đầu đo SpO2: ${error}`);
+    setMeasuring(false);
     return false;
   }
 };

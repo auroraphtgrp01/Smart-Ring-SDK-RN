@@ -3,6 +3,9 @@ import { StyleSheet, Text, View, TouchableOpacity, ScrollView, Alert, Platform }
 import { Device, Characteristic } from 'react-native-ble-plx';
 import {
   manager,
+  SERVICE_UUID,
+  WRITE_UUID,
+  NOTIFY_UUID
 } from './constants';
 
 import {
@@ -137,7 +140,7 @@ export default function App() {
                 setDevice(connectedDevice);
                 addLog('Đã kết nối thành công!');
 
-                // Thiết lập các characteristics
+                // Thiết lập các đặc tính
                 setupCharacteristics(connectedDevice, addLog)
                   .then(({ writeCharacteristic: wChar, notifyCharacteristic: nChar }) => {
                     if (wChar) setWriteCharacteristic(wChar);
@@ -168,6 +171,55 @@ export default function App() {
     }
   };
 
+  // Thiết lập các đặc tính (characteristics) cần thiết
+  const setupCharacteristics = async (device: Device, addLog: (message: string) => void) => {
+    try {
+      addLog("Đang thiết lập các đặc tính...");
+
+      // Tìm kiếm các đặc tính cần thiết
+      const services = await device.services();
+      let foundService = false;
+      let writeChar: Characteristic | null = null;
+      let notifyChar: Characteristic | null = null;
+
+      for (const service of services) {
+        if (service.uuid === SERVICE_UUID) {
+          foundService = true;
+          addLog(`Tìm thấy service: ${service.uuid}`);
+
+          const characteristics = await device.characteristicsForService(service.uuid);
+          addLog(`Tìm thấy ${characteristics.length} đặc tính trong service`);
+
+          for (const characteristic of characteristics) {
+            addLog(`Đặc tính: ${characteristic.uuid}`);
+
+            if (characteristic.uuid === WRITE_UUID) {
+              addLog(`✅ Đã tìm thấy đặc tính ghi: ${characteristic.uuid}`);
+              writeChar = characteristic;
+            }
+
+            if (characteristic.uuid === NOTIFY_UUID) {
+              addLog(`✅ Đã tìm thấy đặc tính thông báo: ${characteristic.uuid}`);
+              notifyChar = characteristic;
+            }
+          }
+        }
+      }
+
+      if (!foundService) {
+        addLog("❌ Không tìm thấy service cần thiết!");
+        return { writeCharacteristic: null, notifyCharacteristic: null };
+      }
+
+      addLog("✅ Đã thiết lập các đặc tính thành công!");
+      setIsDiscoverService(true);
+      return { writeCharacteristic: writeChar, notifyCharacteristic: notifyChar };
+    } catch (error) {
+      addLog(`❌ Lỗi khi thiết lập đặc tính: ${error}`);
+      return { writeCharacteristic: null, notifyCharacteristic: null };
+    }
+  };
+
   // Bắt đầu đo SpO2
   const startMeasurementLocal = async () => {
     if (!device) {
@@ -175,9 +227,77 @@ export default function App() {
       return;
     }
 
+    // Kiểm tra xem thiết bị có thực sự được kết nối không
+    let isConnected = false;
     try {
+      isConnected = await device.isConnected();
+    } catch (error) {
+      addLog(`❌ Thiết bị đã mất kết nối: ${error}`);
+      // Đặt lại trạng thái thiết bị
+      setDevice(null);
+      setWriteCharacteristic(null);
+      setNotifyCharacteristic(null);
+      setIsDiscoverService(false);
+      Alert.alert(
+        "Mất kết nối",
+        "Thiết bị đã mất kết nối. Vui lòng quét và kết nối lại.",
+        [{ text: "OK" }]
+      );
+      return;
+    }
+
+    if (!isConnected) {
+      addLog("❌ Thiết bị không còn kết nối. Đang thử kết nối lại...");
+      try {
+        // Thử kết nối lại với thiết bị
+        await device.connect();
+        addLog("✅ Đã kết nối lại với thiết bị");
+
+        // Khám phá lại dịch vụ
+        await device.discoverAllServicesAndCharacteristics();
+        addLog("✅ Đã khám phá lại dịch vụ và đặc tính");
+
+        // Thiết lập lại các đặc tính
+        const { writeCharacteristic: wChar, notifyCharacteristic: nChar } = await setupCharacteristics(device, addLog);
+        if (wChar) setWriteCharacteristic(wChar);
+        if (nChar) setNotifyCharacteristic(nChar);
+      } catch (reconnectError) {
+        addLog(`❌ Không thể kết nối lại với thiết bị: ${reconnectError}`);
+        setDevice(null);
+        setWriteCharacteristic(null);
+        setNotifyCharacteristic(null);
+        setIsDiscoverService(false);
+        Alert.alert(
+          "Lỗi kết nối",
+          "Không thể kết nối lại với thiết bị. Vui lòng quét và kết nối lại.",
+          [{ text: "OK" }]
+        );
+        return;
+      }
+    }
+
+    try {
+      // Reset các giá trị trước khi bắt đầu đo mới
+      setSpo2Value(null);
+      setPrValue(null);
+      setDataBuffer([]);
+
+      // Hủy bỏ các subscription cũ nếu có
+      if (additionalSubscriptions.length > 0) {
+        additionalSubscriptions.forEach(sub => {
+          if (sub && sub.remove) sub.remove();
+        });
+        setAdditionalSubscriptions([]);
+      }
+
+      // Hủy bỏ polling interval cũ nếu có
+      if (pollingIntervalId) {
+        clearInterval(pollingIntervalId);
+        setPollingIntervalId(null);
+      }
+
       // Sử dụng hàm từ SpO2Service
-      await startSpO2Measurement(
+      const success = await startSpO2Measurement(
         device,
         notificationSubscription,
         setNotificationSubscription,
@@ -189,18 +309,25 @@ export default function App() {
         addLog
       );
 
+      if (!success) {
+        addLog("❌ Không thể bắt đầu đo SpO2");
+        return;
+      }
+
       // Thiết lập callback để nhận dữ liệu SpO2 trực tiếp
       const newSubscriptions = await setupRealDataCallback(
         device,
-        (data: number[]) => handleData(
+        (data: number[], setMeasuringCallback?: (measuring: boolean) => void) => handleData(
           data,
           setSpo2Value,
           setPrValue,
           setDataBuffer,
           dataBuffer,
-          addLog
+          addLog,
+          setMeasuringCallback || setMeasuring
         ),
-        addLog
+        addLog,
+        setMeasuring
       );
 
       // Lưu các subscription mới
@@ -215,18 +342,42 @@ export default function App() {
         setPrValue,
         setDataBuffer,
         dataBuffer,
-        addLog
+        addLog,
+        setMeasuring
       );
       setPollingIntervalId(pollInterval);
 
     } catch (error) {
       addLog(`❌ Lỗi khi bắt đầu đo SpO2: ${error}`);
+      setMeasuring(false);
     }
   };
 
   // Dừng việc đo SpO2
   const stopMeasurementLocal = async () => {
-    if (!device || !measuring) {
+    if (!device) {
+      setMeasuring(false);
+      return;
+    }
+
+    // Kiểm tra xem thiết bị có thực sự được kết nối không
+    let isConnected = false;
+    try {
+      isConnected = await device.isConnected();
+    } catch (error) {
+      addLog(`❌ Thiết bị đã mất kết nối khi cố gắng dừng đo: ${error}`);
+      // Đặt lại trạng thái
+      setMeasuring(false);
+      setDevice(null);
+      setWriteCharacteristic(null);
+      setNotifyCharacteristic(null);
+      setIsDiscoverService(false);
+      return;
+    }
+
+    if (!isConnected) {
+      addLog("❌ Thiết bị không còn kết nối");
+      setMeasuring(false);
       return;
     }
 
@@ -254,6 +405,8 @@ export default function App() {
 
     } catch (error) {
       addLog(`❌ Lỗi khi dừng đo SpO2: ${error}`);
+      // Đảm bảo trạng thái đo được đặt lại ngay cả khi có lỗi
+      setMeasuring(false);
     }
   };
 
