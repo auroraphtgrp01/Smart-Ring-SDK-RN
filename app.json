@@ -1,0 +1,47 @@
+{
+  "expo": {
+    "name": "SmartRingRN2",
+    "slug": "SmartRingRN2",
+    "version": "1.0.0",
+    "orientation": "portrait",
+    "icon": "./assets/icon.png",
+    "userInterfaceStyle": "light",
+    "splash": {
+      "image": "./assets/splash.png",
+      "resizeMode": "contain",
+      "backgroundColor": "#ffffff"
+    },
+    "assetBundlePatterns": [
+      "**/*"
+    ],
+    "ios": {
+      "supportsTablet": true,
+      "bundleIdentifier": "com.yourcompany.smartringrn2",
+      "infoPlist": {
+        "NSBluetoothAlwaysUsageDescription": "Allow $(PRODUCT_NAME) to use Bluetooth",
+        "NSBluetoothPeripheralUsageDescription": "Allow $(PRODUCT_NAME) to use Bluetooth",
+        "UIBackgroundModes": [
+          "bluetooth-central",
+          "bluetooth-peripheral"
+        ]
+      }
+    },
+    "android": {
+      "adaptiveIcon": {
+        "foregroundImage": "./assets/adaptive-icon.png",
+        "backgroundColor": "#ffffff"
+      },
+      "permissions": [
+        "android.permission.BLUETOOTH",
+        "android.permission.BLUETOOTH_ADMIN",
+        "android.permission.BLUETOOTH_CONNECT",
+        "android.permission.BLUETOOTH_SCAN",
+        "android.permission.ACCESS_FINE_LOCATION"
+      ],
+      "package": "com.yourcompany.smartringrn2"
+    },
+    "plugins": [
+      "react-native-ble-plx"
+    ]
+  }
+}
