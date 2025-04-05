@@ -48,6 +48,7 @@ export default function App() {
   const [measuring, setMeasuring] = useState(false);
   const [prValue, setPrValue] = useState<number | null>(null); // Pulse Rate - Nhịp tim
   const [isDiscoverService, setIsDiscoverService] = useState<boolean>(false);
+  const [devices, setDevices] = useState<Device[]>([]);
 
   // Logging function
   const addLog = (message: string) => {
@@ -121,53 +122,45 @@ export default function App() {
     }
   };
 
-  // Scan for devices
-  const startScan = async () => {
-    if (!scanning) {
+  // Quét tìm thiết bị
+  const scanDevices = async () => {
+    try {
       setScanning(true);
-      addLog('Bắt đầu quét thiết bị...');
+      setDevices([]);
+      addLog("Đang quét tìm thiết bị...");
 
-      try {
-        // Sử dụng scanForDevices từ BluetoothService
-        scanForDevices(
-          // Callback khi tìm thấy thiết bị
-          (scannedDevice: Device) => {
-            addLog(`Tìm thấy thiết bị: ${scannedDevice.name} (${scannedDevice.id})`);
-
-            // Auto-connect to the device - sử dụng hàm từ BluetoothService
-            connectToDevice(scannedDevice, addLog).then((connectedDevice) => {
-              if (connectedDevice) {
-                setDevice(connectedDevice);
-                addLog('Đã kết nối thành công!');
-
-                // Thiết lập các đặc tính
-                setupCharacteristics(connectedDevice, addLog)
-                  .then(({ writeCharacteristic: wChar, notifyCharacteristic: nChar }) => {
-                    if (wChar) setWriteCharacteristic(wChar);
-                    if (nChar) setNotifyCharacteristic(nChar);
-                    setBluetoothReady(true);
-                    setIsDiscoverService(true); // Cập nhật trạng thái đã phát hiện service
-                  });
-              }
-            });
-          },
-          // Callback log
-          addLog
-        );
-      } catch (error) {
-        addLog(`Lỗi quét: ${error instanceof Error ? error.message : String(error)}`);
-        setScanning(false);
-      }
-
-      // Đặt timeout để dừng quét sau 10 giây
-      setTimeout(() => {
-        setScanning(false);
-      }, 10000);
-    } else {
-      // Dừng quét nếu đang quét
+      // Dừng quét cũ nếu có
       manager.stopDeviceScan();
+
+      // Bắt đầu quét mới
+      manager.startDeviceScan(null, null, (error, device) => {
+        if (error) {
+          addLog(`❌ Lỗi khi quét: ${error}`);
+          setScanning(false);
+          return;
+        }
+
+        if (device && device.name && device.name.startsWith("R12M")) {
+          // Thêm thiết bị vào danh sách nếu chưa có
+          setDevices(prevDevices => {
+            if (!prevDevices.some(d => d.id === device.id)) {
+              addLog(`Tìm thấy thiết bị: ${device.name} (${device.id})`);
+              return [...prevDevices, device];
+            }
+            return prevDevices;
+          });
+        }
+      });
+
+      // Tự động dừng quét sau 10 giây
+      setTimeout(() => {
+        manager.stopDeviceScan();
+        setScanning(false);
+        addLog("Đã dừng quét thiết bị.");
+      }, 10000);
+    } catch (error) {
+      addLog(`❌ Lỗi khi quét thiết bị: ${error}`);
       setScanning(false);
-      addLog('Dừng quét thiết bị');
     }
   };
 
@@ -428,13 +421,46 @@ export default function App() {
       <Text style={styles.title}>Ứng dụng Đo SpO2 qua Nhẫn Thông Minh</Text>
       <TouchableOpacity
         style={styles.button}
-        onPress={startScan}
+        onPress={scanDevices}
         disabled={scanning || device !== null}
       >
         <Text style={styles.buttonText}>
           {scanning ? 'Đang quét...' : device ? 'Đã kết nối' : 'Quét thiết bị'}
         </Text>
       </TouchableOpacity>
+
+      {devices.length > 0 && (
+        <View style={styles.deviceList}>
+          <Text style={styles.sectionTitle}>Thiết bị đã tìm thấy:</Text>
+          {devices.map(device => (
+            <TouchableOpacity
+              key={device.id}
+              style={styles.deviceItem}
+              onPress={() => connectToDevice(device, addLog).then((connectedDevice) => {
+                if (connectedDevice) {
+                  setDevice(connectedDevice);
+                  addLog('Đã kết nối thành công!');
+
+                  // Thiết lập các đặc tính
+                  setupCharacteristics(connectedDevice, addLog)
+                    .then(({ writeCharacteristic: wChar, notifyCharacteristic: nChar }) => {
+                      if (wChar) setWriteCharacteristic(wChar);
+                      if (nChar) setNotifyCharacteristic(nChar);
+                      setBluetoothReady(true);
+                      setIsDiscoverService(true); // Cập nhật trạng thái đã phát hiện service
+                    });
+                }
+              })}
+              disabled={device === null}
+            >
+              <Text style={styles.deviceName}>
+                {device.name || 'Không có tên'} 
+                <Text style={styles.deviceId}> ({device.id})</Text>
+              </Text>
+            </TouchableOpacity>
+          ))}
+        </View>
+      )}
 
       {device && (
         <View style={styles.measurementContainer}>
@@ -567,5 +593,31 @@ const styles = StyleSheet.create({
   logText: {
     fontSize: 12,
     marginBottom: 2,
+  },
+  deviceList: {
+    marginVertical: 10,
+    padding: 10,
+    backgroundColor: 'white',
+    borderRadius: 5,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 1 },
+    shadowOpacity: 0.2,
+    shadowRadius: 1,
+    elevation: 2,
+  },
+  sectionTitle: {
+    fontSize: 16,
+    fontWeight: 'bold',
+    marginBottom: 10,
+  },
+  deviceItem: {
+    padding: 10,
+    borderBottomWidth: 1,
+    borderBottomColor: '#ccc',
+  },
+  deviceId: {
+    fontSize: 14,
+    color: '#666',
+    fontWeight: 'normal',
   },
 });
