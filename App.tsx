@@ -13,17 +13,20 @@ import {
   disconnectDevice,
   enableNotifications,
   setupCharacteristics,
-  setupRealDataCallback,
+  logData
+} from './BluetoothService';
+
+import {
+  // SpO2 related functions
   sendSpO2Commands,
   stopSpO2Measurement,
-  // Thêm các hàm mới
   handleData,
   setupPollingMechanism,
   pollData,
   setupAlternativeNotificationMethod,
   startSpO2Measurement,
-  logData
-} from './BluetoothService';
+  setupRealDataCallback
+} from './SpO2Service';
 
 // Main App
 export default function App() {
@@ -173,7 +176,7 @@ export default function App() {
     }
 
     try {
-      // Sử dụng hàm từ BluetoothService
+      // Sử dụng hàm từ SpO2Service
       await startSpO2Measurement(
         device,
         notificationSubscription,
@@ -228,7 +231,7 @@ export default function App() {
     }
 
     try {
-      // Sử dụng hàm từ BluetoothService
+      // Sử dụng hàm từ SpO2Service
       await stopSpO2Measurement(
         device,
         measuring,
