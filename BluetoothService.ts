@@ -1,33 +1,15 @@
 import { BleManager, Device, Characteristic, State } from 'react-native-ble-plx';
 import { Platform, PermissionsAndroid, Alert } from 'react-native';
 import * as base64 from 'base64-js';
-
-// Các UUID chính xác theo debug logs
-export const SERVICE_UUID = "be940000-7333-be46-b7ae-689e71722bd5";
-export const WRITE_UUID = "be940001-7333-be46-b7ae-689e71722bd5";
-export const NOTIFY_UUID = "be940001-7333-be46-b7ae-689e71722bd5"; // Sử dụng cùng characteristic cho cả ghi và thông báo
-
-// Constants theo mã Java và debug mới
-export const CMD_APP_START_MEASUREMENT = 815; // 0x32F
-export const CMD_APP_PREPARE_SPO2 = 777;      // 0x309 - Mã chuẩn bị đo SpO2
-
-// Constants for measurements
-export const BLOOD_OXYGEN_MEASURE_TYPE = 2; // SpO2
-export const BLOOD_OXYGEN_VISIBLE_MIN = 70;
-export const BLOOD_OXYGEN_VISIBLE_MAX = 100;
-
-// Data package structure constants
-export const PKG_HEADER = 3;                // Giá trị byte đầu tiên là 3
-export const PKG_TYPE_MEASUREMENT = 47;     // Type byte cho gói đo lường (0x2F)
-export const PKG_TYPE_MEASUREMENT_DATA = 62; // Type byte cho gói dữ liệu đo lường (0x3E)
-export const PKG_TYPE_ACK = 5;              // Type byte cho gói ACK (0x05)
-export const PKG_TYPE_QUERY_RESPONSE = 17;  // Type byte cho gói phản hồi truy vấn (0x11) - tương ứng với CMD.RealBloodOxygen
-
-// Tên thiết bị cần tìm
-export const DEVICE_NAME = "R12M 1DE1";
-
-// Manager BLE
-export const manager = new BleManager();
+import {
+  SERVICE_UUID,
+  WRITE_UUID,
+  NOTIFY_UUID,
+  BLOOD_OXYGEN_VISIBLE_MIN,
+  BLOOD_OXYGEN_VISIBLE_MAX,
+  DEVICE_NAME,
+  manager
+} from './constants';
 
 // Kiểm tra quyền truy cập vị trí trên Android
 export const requestLocationPermission = async (): Promise<boolean> => {
@@ -107,7 +89,7 @@ export const scanForDevices = (onDeviceFound: (device: Device) => void, logCallb
     }
     
     // Chỉ quan tâm đến thiết bị có tên là "R12M 1DE1"
-    if (device && device.name === DEVICE_NAME) {
+    if (device && device.name?.includes(DEVICE_NAME)) {
       logCallback(` Tìm thấy thiết bị: ${device.name} (${device.id})`);
       onDeviceFound(device);
     }
@@ -428,14 +410,6 @@ export const logData = (prefix: string, data: number[] | Uint8Array) => {
   console.log(`${prefix}: [${Array.from(data).join(', ')}] (${data.length} bytes)`);
 };
 
-// Chuyển đổi dataType sang byte thứ hai của gói (byte cuối của giá trị hex)
-export const convertDataTypeToCommandType = (dataType: number): number => {
-  // Theo debug mới, dataType 815 (0x32F) có byte thứ hai là 47 (0x2F)
-  const hexString = dataType.toString(16).padStart(4, '0');
-  const secondByte = parseInt(hexString.slice(2, 4), 16);
-  return secondByte;
-};
-
 // Xử lý dữ liệu nhận được từ thiết bị
 export const handleData = (
   data: number[], 
@@ -743,7 +717,7 @@ export const setupAlternativeNotificationMethod = async (
             return;
           }
 
-          if (characteristic?.value) {
+          if (characteristic && characteristic.value) {
             addLog('✓ Nhận được notification (toggle)!');
             const bytes = base64.toByteArray(characteristic.value);
             const byteArray = Array.from(bytes);

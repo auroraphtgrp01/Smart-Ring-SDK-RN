@@ -1,16 +1,11 @@
 import React, { useState, useEffect } from 'react';
 import { StyleSheet, Text, View, TouchableOpacity, ScrollView, Alert, Platform } from 'react-native';
 import { Device, Characteristic } from 'react-native-ble-plx';
-import * as base64 from 'base64-js';
 import {
-  // Constants
-  SERVICE_UUID,
-  WRITE_UUID,
-  NOTIFY_UUID,
-  BLOOD_OXYGEN_VISIBLE_MIN,
-  BLOOD_OXYGEN_VISIBLE_MAX,
-  DEVICE_NAME,
   manager,
+} from './constants';
+
+import {
   // Functions
   requestLocationPermission,
   scanForDevices,
@@ -27,8 +22,7 @@ import {
   pollData,
   setupAlternativeNotificationMethod,
   startSpO2Measurement,
-  logData,
-  convertDataTypeToCommandType
+  logData
 } from './BluetoothService';
 
 // Main App
