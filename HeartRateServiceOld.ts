@@ -304,17 +304,21 @@ export const stopHeartRateMeasurement = async (
   addLog(" 🔴 Đang dừng đo nhịp tim...");
   setMeasuring(false);
   
+  // Đặt lại subscription trước để tránh lỗi khi đo lại
+  setNotificationSubscription(null);
+  
   // Hủy đăng ký tất cả các subscription để tránh lỗi khi đo lại
   if (notificationSubscription) {
     try {
-      notificationSubscription.remove();
-      addLog(" ✅ Đã hủy đăng ký notifications chính");
+      if (typeof notificationSubscription.remove === 'function') {
+        notificationSubscription.remove();
+        addLog(" ✅ Đã hủy đăng ký notifications chính");
+      } else {
+        addLog(" ⚠️ Lưu ý: notificationSubscription.remove không phải là hàm");
+      }
     } catch (error) {
       addLog(` ⚠️ Lỗi khi hủy subscription chính: ${error}`);
     }
-    
-    // Đặt lại subscription
-    setNotificationSubscription(null);
   }
   
   if (!device) {
@@ -492,41 +496,49 @@ export const handleData = (
   }
 
   // Kiểm tra xem đây có phải là gói phản hồi kết thúc với dataType = 1038 (0x040E) không
-  // Theo phân tích Java code, khi đo xong, thiết bị gửi thông báo với dataType = 1038
+  // Theo phân tích Java code và debug logs, khi đo xong, thiết bị gửi thông báo với dataType = 1038
   if (data.length >= 4 && data[0] === 0x04 && data[1] === 0x0E) {
-    addLog(" Phát hiện gói thông báo kết thúc đo với mã 0x040E (1038)");
+    addLog(" 🔔 Phát hiện gói thông báo KẾT THÚC đo với mã 0x040E (1038)");
+    
+    // Tự động dừng đo khi nhận được thông báo kết thúc
+    if (setMeasuring) {
+      addLog(" ✅ Đã nhận thông báo kết thúc đo, tự động dừng");
+      setMeasuring(false);
+    }
     
     // Kiểm tra xem đây có phải là gói dữ liệu nhịp tim không (byte[4] = 0x00/0x01 = HeartRate)
-    const measurementType = data[4]; // byte 5 (index 4) chứa loại đo lường
-    
+    let measurementType = 0;
     if (data.length >= 5) {
+      measurementType = data[4]; // byte 5 (index 4) chứa loại đo lường
       addLog(` Loại đo lường: byte[4] = ${measurementType}`);
+    }
+    
+    // Debug: hiển thị tất cả các byte của gói tin
+    addLog(` Tất cả byte: ${data.map((b, i) => `byte[${i}]=${b}`).join(', ')}`);
+    
+    // Phân tích mã Java cho thấy byte[6] thường chứa giá trị nhịp tim trong gói kết thúc
+    if (data.length >= 7) {
+      // Kiểm tra cả byte[5] và byte[6] vì có thể chứa giá trị nhịp tim
+      const potentialValues = [data[5], data[6]];
       
-      if (measurementType === 0x00 || measurementType === 0x01) { // 0 hoặc 1 là nhịp tim
-        addLog(" Gói dữ liệu chứa thông tin nhịp tim (type=0/1)");
-
-        // Debug: hiển thị tất cả các byte của gói tin
-        addLog(` Tất cả byte: ${data.map((b, i) => `byte[${i}]=${b}`).join(', ')}`);
-
-        // Phân tích mã Java cho thấy byte[5] và byte[6] có thể chứa giá trị nhịp tim
-        if (data.length >= 7) {
-          const potentialValues = [data[5], data[6]];
+      for (let i = 0; i < potentialValues.length; i++) {
+        const value = potentialValues[i] & 0xFF;
+        const index = i + 5; // Vị trí thực trong mảng (5 hoặc 6)
+        
+        if (value >= HEART_RATE_VISIBLE_MIN && value <= HEART_RATE_VISIBLE_MAX) {
+          addLog(` ❤️ Giá trị nhịp tim từ gói kết thúc 0x040E, byte[${index}]: ${value} BPM`);
+          setHrValue(value);
           
-          for (let i = 0; i < potentialValues.length; i++) {
-            const value = potentialValues[i] & 0xFF;
-            const index = i + 5; // Vị trí thực trong mảng (5 hoặc 6)
-            
-            if (value >= HEART_RATE_VISIBLE_MIN && value <= HEART_RATE_VISIBLE_MAX) {
-              addLog(` Giá trị nhịp tim từ gói 0x040E, byte[${index}]: ${value} BPM`);
-              setHrValue(value);
-              if (setMeasuring) setMeasuring(false);
-              Alert.alert("Kết quả đo nhịp tim", `Nhịp tim của bạn là: ${value} BPM`);
-              return;
-            }
-          }
+          // Hiển thị kết quả
+          Alert.alert("Kết quả đo nhịp tim", `Nhịp tim của bạn là: ${value} BPM`);
+          return;
         }
       }
     }
+    
+    // Ngay cả khi không tìm thấy giá trị nhịp tim, vẫn dừng đo vì đã nhận được thông báo kết thúc
+    // Đây là quan trọng để tránh lỗi khi đo lại
+    return;
   }
 
   // Trường hợp 1: Kiểm tra gói dữ liệu Real-time Heart Rate (3, 61, ...)
@@ -595,15 +607,19 @@ export const startHeartRateMeasurement = async (
     }
     
     // Hủy bỏ các subscription hiện tại nếu có
+    // Đặt lại subscription để tránh lỗi khi đo lại
+    setNotificationSubscription(null);
+    
+    // Sau đó mới thử hủy subscription cũ nếu có
     if (notificationSubscription) {
       try {
         addLog(" Hủy đăng ký thông báo trước khi bắt đầu đo mới...");
         if (typeof notificationSubscription.remove === 'function') {
           notificationSubscription.remove();
           addLog(" ✅ Đã hủy đăng ký thông báo trước đó");
+        } else {
+          addLog(" ⚠️ Lưu ý: notificationSubscription.remove không phải là hàm");
         }
-        // Đặt lại subscription bất kể kết quả
-        setNotificationSubscription(null);
       } catch (error) {
         addLog(` ⚠️ Không thể hủy thông báo cũ: ${error}`);
         // Vẫn tiếp tục vì đây có thể chỉ là cảnh báo, không phải lỗi

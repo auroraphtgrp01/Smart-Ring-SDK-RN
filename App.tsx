@@ -26,18 +26,21 @@ import {
   handleData,
   setupPollingMechanism,
   pollData,
-  setupAlternativeNotificationMethod,
-  startSpO2Measurement,
-  setupRealDataCallback
-} from './SpO2Service';
+  startSpO2Measurement
+} from './SpO2ServiceRefactored';
 
 // Import các hàm từ HeartRateService
 import {
   sendHeartRateCommands,
   stopHeartRateMeasurement,
-  setupRealDataCallback as setupHeartRateCallback,
-  handleData as handleHeartRateData
-} from './HeartRateService';
+  handleData as handleHeartRateData,
+  startHeartRateMeasurement
+} from './HeartRateServiceRefactored';
+
+// Import các hàm từ BaseMeasureService
+import {
+  setupRealDataCallback
+} from './BaseMeasureService';
 
 // Main App
 export default function App() {
@@ -303,7 +306,8 @@ export default function App() {
         setPollingIntervalId(null);
       }
 
-      // Sử dụng hàm từ SpO2Service
+      // Sử dụng hàm từ SpO2ServiceRefactored
+      addLog("🔄 Đang bắt đầu đo SpO2...");
       const success = await startSpO2Measurement(
         device,
         notificationSubscription,
@@ -313,15 +317,17 @@ export default function App() {
         setPrValue,
         setDataBuffer,
         dataBuffer,
-        addLog
+        addLog,
+        setPollingIntervalId
       );
 
       if (!success) {
         addLog("❌ Không thể bắt đầu đo SpO2");
+        setMeasuring(false);
         return;
       }
 
-      // Thiết lập callback để nhận dữ liệu SpO2 trực tiếp
+      // Thiết lập thêm callback để nhận dữ liệu SpO2 trực tiếp
       const newSubscriptions = await setupRealDataCallback(
         device,
         (data: number[], setMeasuringCallback?: (measuring: boolean) => void) => handleData(
@@ -339,20 +345,6 @@ export default function App() {
 
       // Lưu các subscription mới
       setAdditionalSubscriptions(prev => [...prev, ...newSubscriptions]);
-
-      // Thiết lập cơ chế polling dự phòng
-      const pollInterval = setupPollingMechanism(
-        device,
-        notifyCharacteristic,
-        measuring,
-        setSpo2Value,
-        setPrValue,
-        setDataBuffer,
-        dataBuffer,
-        addLog,
-        setMeasuring
-      );
-      setPollingIntervalId(pollInterval);
 
     } catch (error) {
       addLog(`❌ Lỗi khi bắt đầu đo SpO2: ${error}`);
@@ -389,7 +381,8 @@ export default function App() {
     }
 
     try {
-      // Sử dụng hàm từ SpO2Service
+      // Sử dụng hàm từ SpO2ServiceRefactored
+      addLog(" 🔴 Đang dừng đo SpO2...");
       await stopSpO2Measurement(
         device,
         measuring,
@@ -478,36 +471,23 @@ export default function App() {
       setHrValue(null);
       setHrDataBuffer([]);
 
-      // Hủy bỏ các subscription cũ nếu có
-      if (hrNotificationSubscription) {
-        hrNotificationSubscription.remove();
-        setHrNotificationSubscription(null);
-      }
-
-      // Thiết lập trạng thái đo
-      setMeasuringHeartRate(true);
-
-      // Gửi lệnh đo nhịp tim
+      // Sử dụng hàm startHeartRateMeasurement từ service mới
       addLog("🔄 Đang bắt đầu đo nhịp tim...");
-      await sendHeartRateCommands(device, addLog);
-
-      // Thiết lập callback để nhận dữ liệu nhịp tim trực tiếp
-      const newSubscriptions = await setupHeartRateCallback(
+      const success = await startHeartRateMeasurement(
         device,
-        (data: number[], setMeasuringCallback?: (measuring: boolean) => void) => handleHeartRateData(
-          data,
-          setHrValue,
-          setHrDataBuffer,
-          hrDataBuffer,
-          addLog,
-          setMeasuringCallback || setMeasuringHeartRate
-        ),
-        addLog,
-        setMeasuringHeartRate
+        hrNotificationSubscription,
+        setHrNotificationSubscription,
+        setMeasuringHeartRate,
+        setHrValue,
+        setHrDataBuffer,
+        hrDataBuffer,
+        addLog
       );
 
-      // Lưu subscription mới
-      setHrNotificationSubscription(newSubscriptions);
+      if (!success) {
+        addLog("❌ Không thể bắt đầu đo nhịp tim");
+        setMeasuringHeartRate(false);
+      }
 
     } catch (error) {
       addLog(`❌ Lỗi khi bắt đầu đo nhịp tim: ${error}`);
@@ -540,7 +520,8 @@ export default function App() {
     }
 
     try {
-      // Sử dụng hàm từ HeartRateService
+      // Sử dụng hàm từ HeartRateServiceRefactored
+      addLog(" 🔴 Đang dừng đo nhịp tim...");
       await stopHeartRateMeasurement(
         device,
         hrNotificationSubscription,
