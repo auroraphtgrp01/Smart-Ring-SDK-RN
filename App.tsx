@@ -9,7 +9,7 @@ import {
 } from './constants';
 
 import {
-  // Functions
+  // Functionsr
   requestLocationPermission,
   scanForDevices,
   connectToDevice,
@@ -27,7 +27,7 @@ import {
   setupPollingMechanism,
   pollData,
   startSpO2Measurement
-} from './SpO2ServiceRefactored';
+} from './SpO2Service';
 
 // Import các hàm từ HeartRateService
 import {
@@ -35,7 +35,7 @@ import {
   stopHeartRateMeasurement,
   handleData as handleHeartRateData,
   startHeartRateMeasurement
-} from './HeartRateServiceRefactored';
+} from './HeartRateService';
 
 // Import các hàm từ BaseMeasureService
 import {
@@ -60,7 +60,7 @@ export default function App() {
   const [prValue, setPrValue] = useState<number | null>(null); // Pulse Rate - Nhịp tim
   const [isDiscoverService, setIsDiscoverService] = useState<boolean>(false);
   const [devices, setDevices] = useState<Device[]>([]);
-  
+
   // Thêm state cho nhịp tim
   const [measuringHeartRate, setMeasuringHeartRate] = useState(false);
   const [hrValue, setHrValue] = useState<number | null>(null); // Heart Rate - Nhịp tim riêng biệt
@@ -589,7 +589,7 @@ export default function App() {
               disabled={device === null}
             >
               <Text style={styles.deviceName}>
-                {device.name || 'Không có tên'} 
+                {device.name || 'Không có tên'}
                 <Text style={styles.deviceId}> ({device.id})</Text>
               </Text>
             </TouchableOpacity>

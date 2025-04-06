@@ -1,11 +1,9 @@
-// HeartRateServiceRefactored.ts - Tập trung logic đo nhịp tim sử dụng BaseMeasureService
 import { Device } from 'react-native-ble-plx';
 import * as base64 from 'base64-js';
 import { Alert } from 'react-native';
 import {
   SERVICE_UUID,
   WRITE_UUID,
-  NOTIFY_UUID,
   HEART_RATE_VISIBLE_MIN,
   HEART_RATE_VISIBLE_MAX,
   HEART_RATE_PREPARE_COMMAND,
@@ -102,7 +100,7 @@ export const stopHeartRateMeasurement = async (
       "Không có kết quả",
       "Không thể đo được nhịp tim. Vui lòng thử lại.",
       [{ text: "OK" }]
-    );
+    );  
   }
 };
 
