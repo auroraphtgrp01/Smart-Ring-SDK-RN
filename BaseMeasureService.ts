@@ -1,9 +1,7 @@
-// BaseMeasureService.ts - Tập trung logic đo lường cơ bản dùng chung cho các loại đo
-import { Device, Characteristic } from 'react-native-ble-plx';
+import { Device } from 'react-native-ble-plx';
 import * as base64 from 'base64-js';
 import { SERVICE_UUID, NOTIFY_UUID } from './constants';
 
-// Interface cho các tham số đo lường
 export interface MeasurementParams {
   device: Device | null;
   notificationSubscription: any;
@@ -12,13 +10,12 @@ export interface MeasurementParams {
   addLog: (message: string) => void;
 }
 
-// Tạo đăng ký callback để nhận dữ liệu đo lường trực tiếp
 export const setupRealDataCallback = async (
   device: Device | null,
   handleData: (data: number[], setMeasuring?: (measuring: boolean) => void) => void,
   logCallback: (message: string) => void,
   setMeasuring?: (measuring: boolean) => void,
-  specificNotifyUUID?: string // UUID đặc biệt cho một số loại đo (nếu có)
+  specificNotifyUUID?: string
 ): Promise<any[]> => {
   if (!device) return [];
   
@@ -27,7 +24,6 @@ export const setupRealDataCallback = async (
   logCallback(" Đăng ký callback nhận dữ liệu trực tiếp...");
   
   try {
-    // Đăng ký với uuid chính
     const mainSubscription = device.monitorCharacteristicForService(
       SERVICE_UUID,
       NOTIFY_UUID,
@@ -41,7 +37,6 @@ export const setupRealDataCallback = async (
           const data = base64.toByteArray(characteristic.value);
           logCallback(` Dữ liệu từ NOTIFY_UUID: ${Array.from(data).map(b => b.toString(16).padStart(2, '0')).join(' ')}`);
           
-          // Xử lý dữ liệu
           handleData(Array.from(data), setMeasuring);
         }
       }
@@ -50,7 +45,6 @@ export const setupRealDataCallback = async (
     additionalSubscriptions.push(mainSubscription);
     logCallback(" Đã đăng ký lắng nghe với NOTIFY_UUID chính");
     
-    // Đăng ký với UUID đặc biệt nếu có
     if (specificNotifyUUID) {
       try {
         const specificSubscription = device.monitorCharacteristicForService(
@@ -66,7 +60,6 @@ export const setupRealDataCallback = async (
               const data = base64.toByteArray(characteristic.value);
               logCallback(` Dữ liệu từ ${specificNotifyUUID}: ${Array.from(data).map(b => b.toString(16).padStart(2, '0')).join(' ')}`);
               
-              // Xử lý dữ liệu từ UUID đặc biệt
               handleData(Array.from(data), setMeasuring);
             }
           }
@@ -79,21 +72,17 @@ export const setupRealDataCallback = async (
       }
     }
     
-    // Liệt kê tất cả các đặc tính (characteristics) của service
     const characteristics = await device.characteristicsForService(SERVICE_UUID);
     
     if (characteristics.length > 0) {
       logCallback(` Tìm thấy ${characteristics.length} characteristics trong service`);
       
-      // Đăng ký lắng nghe với tất cả các đặc tính có thể notification/indication
       for (const char of characteristics) {
-        // Bỏ qua các UUID đã đăng ký ở trên
         if (char.uuid === NOTIFY_UUID || char.uuid === specificNotifyUUID) continue;
         
         logCallback(` Thử đăng ký lắng nghe với characteristic: ${char.uuid}`);
         
         try {
-          // Đăng ký với tất cả characteristic, không chỉ những cái isNotifiable
           const additionalSubscription = device.monitorCharacteristicForService(
             SERVICE_UUID,
             char.uuid,
@@ -107,7 +96,6 @@ export const setupRealDataCallback = async (
                 const data = base64.toByteArray(characteristic.value);
                 logCallback(` Dữ liệu từ ${char.uuid}: ${Array.from(data).map(b => b.toString(16).padStart(2, '0')).join(' ')}`);
                 
-                // Xử lý dữ liệu từ các đặc tính khác
                 handleData(Array.from(data), setMeasuring);
               }
             }
@@ -127,7 +115,6 @@ export const setupRealDataCallback = async (
   return additionalSubscriptions;
 };
 
-// Gửi lệnh đo lường cơ bản
 export const sendMeasurementCommand = async (
   device: Device | null,
   commandBytes: number[],
@@ -153,7 +140,6 @@ export const sendMeasurementCommand = async (
   }
 };
 
-// Dừng đo lường cơ bản
 export const stopMeasurement = async (
   params: MeasurementParams,
   stopCommand: number[],
@@ -161,14 +147,11 @@ export const stopMeasurement = async (
 ): Promise<void> => {
   const { device, notificationSubscription, setNotificationSubscription, setMeasuring, addLog } = params;
   
-  // Đảm bảo dừng trạng thái đo ngay lập tức
   addLog(stopMessage);
   setMeasuring(false);
   
-  // Đặt lại subscription trước để tránh lỗi khi đo lại
   setNotificationSubscription(null);
   
-  // Hủy đăng ký tất cả các subscription để tránh lỗi khi đo lại
   if (notificationSubscription) {
     try {
       if (typeof notificationSubscription.remove === 'function') {
@@ -188,7 +171,6 @@ export const stopMeasurement = async (
   }
   
   try {
-    // Gửi lệnh dừng đo
     addLog(" Gửi lệnh dừng đo...");
     await device.writeCharacteristicWithResponseForService(
       SERVICE_UUID,
@@ -201,7 +183,6 @@ export const stopMeasurement = async (
   }
 };
 
-// Thiết lập thông báo cơ bản cho đo lường
 export const setupBasicNotification = async (
   device: Device | null,
   handleData: (...args: any[]) => void,
@@ -215,7 +196,6 @@ export const setupBasicNotification = async (
   }
   
   try {
-    // Thiết lập callback để nhận dữ liệu từ thiết bị
     const subscription = device.monitorCharacteristicForService(
       SERVICE_UUID,
       NOTIFY_UUID,
@@ -228,7 +208,6 @@ export const setupBasicNotification = async (
         if (characteristic?.value) {
           const data = base64.toByteArray(characteristic.value);
           
-          // Xử lý dữ liệu nhận được
           handleData(Array.from(data), ...handleDataArgs);
         }
       }
@@ -243,12 +222,10 @@ export const setupBasicNotification = async (
   }
 };
 
-// Kiểm tra xem dữ liệu có phải là thông báo kết thúc đo không
 export const isCompletionNotification = (data: number[]): boolean => {
   return data.length >= 4 && data[0] === 0x04 && data[1] === 0x0E;
 };
 
-// Kiểm tra giá trị đo có nằm trong khoảng hợp lệ không
 export const isValueInRange = (value: number, min: number, max: number): boolean => {
   return value >= min && value <= max;
 };
