@@ -31,6 +31,14 @@ import {
   setupRealDataCallback
 } from './SpO2Service';
 
+// Import các hàm từ HeartRateService
+import {
+  sendHeartRateCommands,
+  stopHeartRateMeasurement,
+  setupRealDataCallback as setupHeartRateCallback,
+  handleData as handleHeartRateData
+} from './HeartRateService';
+
 // Main App
 export default function App() {
   // State variables
@@ -49,6 +57,12 @@ export default function App() {
   const [prValue, setPrValue] = useState<number | null>(null); // Pulse Rate - Nhịp tim
   const [isDiscoverService, setIsDiscoverService] = useState<boolean>(false);
   const [devices, setDevices] = useState<Device[]>([]);
+  
+  // Thêm state cho nhịp tim
+  const [measuringHeartRate, setMeasuringHeartRate] = useState(false);
+  const [hrValue, setHrValue] = useState<number | null>(null); // Heart Rate - Nhịp tim riêng biệt
+  const [hrDataBuffer, setHrDataBuffer] = useState<number[][]>([]);
+  const [hrNotificationSubscription, setHrNotificationSubscription] = useState<any>(null);
 
   // Logging function
   const addLog = (message: string) => {
@@ -403,6 +417,146 @@ export default function App() {
     }
   };
 
+  // Bắt đầu đo nhịp tim
+  const startHeartRateMeasurementLocal = async () => {
+    if (!device) {
+      addLog("❌ Chưa kết nối với thiết bị!");
+      return;
+    }
+
+    // Kiểm tra xem thiết bị có thực sự được kết nối không
+    let isConnected = false;
+    try {
+      isConnected = await device.isConnected();
+    } catch (error) {
+      addLog(`❌ Thiết bị đã mất kết nối: ${error}`);
+      // Đặt lại trạng thái thiết bị
+      setDevice(null);
+      setWriteCharacteristic(null);
+      setNotifyCharacteristic(null);
+      setIsDiscoverService(false);
+      Alert.alert(
+        "Mất kết nối",
+        "Thiết bị đã mất kết nối. Vui lòng quét và kết nối lại.",
+        [{ text: "OK" }]
+      );
+      return;
+    }
+
+    if (!isConnected) {
+      addLog("❌ Thiết bị không còn kết nối. Đang thử kết nối lại...");
+      try {
+        // Thử kết nối lại với thiết bị
+        await device.connect();
+        addLog("✅ Đã kết nối lại với thiết bị");
+
+        // Khám phá lại dịch vụ
+        await device.discoverAllServicesAndCharacteristics();
+        addLog("✅ Đã khám phá lại dịch vụ và đặc tính");
+
+        // Thiết lập lại các đặc tính
+        const { writeCharacteristic: wChar, notifyCharacteristic: nChar } = await setupCharacteristics(device, addLog);
+        if (wChar) setWriteCharacteristic(wChar);
+        if (nChar) setNotifyCharacteristic(nChar);
+      } catch (reconnectError) {
+        addLog(`❌ Không thể kết nối lại với thiết bị: ${reconnectError}`);
+        setDevice(null);
+        setWriteCharacteristic(null);
+        setNotifyCharacteristic(null);
+        setIsDiscoverService(false);
+        Alert.alert(
+          "Lỗi kết nối",
+          "Không thể kết nối lại với thiết bị. Vui lòng quét và kết nối lại.",
+          [{ text: "OK" }]
+        );
+        return;
+      }
+    }
+
+    try {
+      // Reset các giá trị trước khi bắt đầu đo mới
+      setHrValue(null);
+      setHrDataBuffer([]);
+
+      // Hủy bỏ các subscription cũ nếu có
+      if (hrNotificationSubscription) {
+        hrNotificationSubscription.remove();
+        setHrNotificationSubscription(null);
+      }
+
+      // Thiết lập trạng thái đo
+      setMeasuringHeartRate(true);
+
+      // Gửi lệnh đo nhịp tim
+      addLog("🔄 Đang bắt đầu đo nhịp tim...");
+      await sendHeartRateCommands(device, addLog);
+
+      // Thiết lập callback để nhận dữ liệu nhịp tim trực tiếp
+      const newSubscriptions = await setupHeartRateCallback(
+        device,
+        (data: number[], setMeasuringCallback?: (measuring: boolean) => void) => handleHeartRateData(
+          data,
+          setHrValue,
+          setHrDataBuffer,
+          hrDataBuffer,
+          addLog,
+          setMeasuringCallback || setMeasuringHeartRate
+        ),
+        addLog,
+        setMeasuringHeartRate
+      );
+
+      // Lưu subscription mới
+      setHrNotificationSubscription(newSubscriptions);
+
+    } catch (error) {
+      addLog(`❌ Lỗi khi bắt đầu đo nhịp tim: ${error}`);
+      setMeasuringHeartRate(false);
+    }
+  };
+
+  // Dừng việc đo nhịp tim
+  const stopHeartRateMeasurementLocal = async () => {
+    if (!device) {
+      setMeasuringHeartRate(false);
+      return;
+    }
+
+    // Kiểm tra xem thiết bị có thực sự được kết nối không
+    let isConnected = false;
+    try {
+      isConnected = await device.isConnected();
+    } catch (error) {
+      addLog(`❌ Thiết bị đã mất kết nối khi cố gắng dừng đo nhịp tim: ${error}`);
+      // Đặt lại trạng thái
+      setMeasuringHeartRate(false);
+      return;
+    }
+
+    if (!isConnected) {
+      addLog("❌ Thiết bị không còn kết nối");
+      setMeasuringHeartRate(false);
+      return;
+    }
+
+    try {
+      // Sử dụng hàm từ HeartRateService
+      await stopHeartRateMeasurement(
+        device,
+        hrNotificationSubscription,
+        setHrNotificationSubscription,
+        setMeasuringHeartRate,
+        hrValue,
+        addLog
+      );
+
+    } catch (error) {
+      addLog(`❌ Lỗi khi dừng đo nhịp tim: ${error}`);
+      // Đảm bảo trạng thái đo được đặt lại ngay cả khi có lỗi
+      setMeasuringHeartRate(false);
+    }
+  };
+
   // Cleanup khi component unmount
   useEffect(() => {
     return () => {
@@ -489,6 +643,16 @@ export default function App() {
           >
             <Text style={styles.buttonText}>
               {measuring ? 'Dừng đo' : 'Bắt đầu đo'}
+            </Text>
+          </TouchableOpacity>
+
+          <TouchableOpacity
+            style={[styles.buttonAction, measuringHeartRate ? styles.buttonMeasuring : null]}
+            onPress={measuringHeartRate ? stopHeartRateMeasurementLocal : startHeartRateMeasurementLocal}
+            disabled={!isDiscoverService}
+          >
+            <Text style={styles.buttonText}>
+              {measuringHeartRate ? 'Dừng đo nhịp tim' : 'Bắt đầu đo nhịp tim'}
             </Text>
           </TouchableOpacity>
 
