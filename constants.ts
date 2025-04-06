@@ -1,8 +1,5 @@
-// constants.ts - Tập trung các hằng số cho ứng dụng
-
 import { BleManager } from 'react-native-ble-plx';
 
-// Các UUID chính xác theo debug logs
 export const SERVICE_UUID = "be940000-7333-be46-b7ae-689e71722bd5";
 export const WRITE_UUID = "be940001-7333-be46-b7ae-689e71722bd5";
 export const NOTIFY_UUID = "be940001-7333-be46-b7ae-689e71722bd5"; // Sử dụng cùng characteristic cho cả ghi và thông báo
@@ -45,6 +42,8 @@ export const HEART_RATE_START_COMMAND = [3, 0x2f, 8, 0, 1, 0, 0x4f, 0x1b];  // L
 
 // Lệnh STOP tương ứng: 03 2f 07 00 00 ee 99
 export const HEART_RATE_STOP_COMMAND = [3, 0x2f, 7, 0, 0, 0xee, 0x99];        // Lệnh dừng từ debug
+
+export const RESET_COMMAND_HR = [3, 9, 9, 0, 1, 0, 2, 0xa0, 0xde]
 
 // Chuyển đổi dataType sang byte thứ hai của gói (byte cuối của giá trị hex)
 export const convertDataTypeToCommandType = (dataType: number): number => {
