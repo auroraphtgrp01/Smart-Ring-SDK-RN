@@ -234,7 +234,9 @@ export const sendHeartRateCommands = async (
               logCallback(" ✅ Nhận thông báo hoàn thành đo nhịp tim!");
             }
           }
-        }
+        },
+        // Sử dụng transaction ID để có thể hủy bỏ sau này
+        'heartRateMainNotification'
       );
       
       // Đăng ký lắng nghe trên HEART_RATE_NOTIFY_UUID - UUID này trả về dữ liệu nhịp tim
@@ -261,7 +263,9 @@ export const sendHeartRateCommands = async (
               }
             }
           }
-        }
+        },
+        // Sử dụng transaction ID để có thể hủy bỏ sau này
+        'heartRateSpecialNotification'
       );
     } catch (error) {
       logCallback(` Lỗi khi đăng ký lắng nghe: ${error}`);
@@ -287,7 +291,7 @@ export const sendHeartRateCommands = async (
   }
 };
 
-// Dừng đo nhịp tim dựa trên phân tích mã Java
+// Dừng đo nhịp tim dựa trên FRIDA debug logs
 export const stopHeartRateMeasurement = async (
   device: Device | null,
   notificationSubscription: any,
@@ -297,17 +301,24 @@ export const stopHeartRateMeasurement = async (
   addLog: (message: string) => void
 ) => {
   // Đảm bảo dừng trạng thái đo ngay lập tức
+  addLog(" 🔴 Đang dừng đo nhịp tim...");
   setMeasuring(false);
   
-  // Hủy đăng ký thông báo nếu có
+  // Hủy đăng ký tất cả các subscription để tránh lỗi khi đo lại
   if (notificationSubscription) {
-    notificationSubscription.remove();
+    try {
+      notificationSubscription.remove();
+      addLog(" ✅ Đã hủy đăng ký notifications chính");
+    } catch (error) {
+      addLog(` ⚠️ Lỗi khi hủy subscription chính: ${error}`);
+    }
+    
+    // Đặt lại subscription
     setNotificationSubscription(null);
-    addLog(" Đã hủy đăng ký notifications");
   }
   
   if (!device) {
-    addLog(" Không có thiết bị để dừng đo!");
+    addLog(" ❌ Không có thiết bị để dừng đo!");
     return;
   }
   
@@ -317,17 +328,17 @@ export const stopHeartRateMeasurement = async (
     try {
       isConnected = await device.isConnected();
     } catch (error) {
-      addLog(` Thiết bị đã mất kết nối khi cố gắng dừng đo: ${error}`);
+      addLog(` ❌ Thiết bị đã mất kết nối khi cố gắng dừng đo: ${error}`);
       return;
     }
     
     if (!isConnected) {
-      addLog(" Thiết bị không còn kết nối khi dừng đo");
+      addLog(" ❌ Thiết bị không còn kết nối khi dừng đo");
       return;
     }
     
-    // Gửi lệnh dừng đo nhịp tim với format cũ
-    addLog(" Gửi lệnh dừng đo nhịp tim (format cũ)");
+    // 1. Gửi lệnh dừng đo chính xác từ debug logs: 03 2f 07 00 00 ee 99
+    addLog(" Gửi lệnh dừng đo nhịp tim...");
     addLog(` Lệnh dừng: [${HEART_RATE_STOP_COMMAND.join(', ')}]`);
     
     await device.writeCharacteristicWithResponseForService(
@@ -336,24 +347,61 @@ export const stopHeartRateMeasurement = async (
       base64.fromByteArray(new Uint8Array(HEART_RATE_STOP_COMMAND))
     );
     
-    // Chờ một chút để thiết bị xử lý
-    await new Promise(resolve => setTimeout(resolve, 500));
+    // Chờ thiết bị xử lý
+    await new Promise(resolve => setTimeout(resolve, 1000));
     
-    // Gửi lệnh dừng đo với format appStartMeasurement từ Java code
-    // Dựa theo phân tích Java code: YCBTClient.appStartMeasurement(0, 1, callback)
-    // với 0 là dừng đo, 1 là mã loại đo nhịp tim
-    const stopCommandType = convertDataTypeToCommandType(CMD_APP_START_MEASUREMENT);
-    const stopCommand = [3, stopCommandType, 2, 0, 0, HEART_RATE_MEASURE_TYPE]; // 0 = stop, 1 = heart rate type
+    // 2. Gửi thêm một lệnh prepare đặc biệt để làm sạch trạng thái của thiết bị
+    // Dựa trên debug logs: 03 09 09 00 01 00 02 a0 de
+    // Command này được thấy sau khi hoàn tất đo lường trong log
+    const resetCommand = [3, 9, 9, 0, 1, 0, 2, 0xa0, 0xde];
     
-    addLog(` Gửi lệnh dừng appStartMeasurement: [${stopCommand.join(', ')}]`);
-    
+    addLog(" Gửi lệnh làm sạch trạng thái thiết bị...");
     await device.writeCharacteristicWithResponseForService(
       SERVICE_UUID,
       WRITE_UUID,
-      base64.fromByteArray(new Uint8Array(stopCommand))
+      base64.fromByteArray(new Uint8Array(resetCommand))
     );
     
-    addLog(" Đã dừng đo nhịp tim!");
+    await new Promise(resolve => setTimeout(resolve, 500));
+    
+    try {
+      // 3. Hủy các subscription từ thiết bị để tránh xung đột khi đo lại
+      // Trong react-native-ble-plx, chúng ta chỉ cần dừng sử dụng các subscription
+      // và gửi lệnh reset để đảm bảo thiết bị sạch
+      addLog(" Hủy đăng ký lắng nghe trên các kênh...");
+      
+      // Gửi thêm lệnh disable characteristics trên cả hai kênh để đảm bảo sạch
+      // Sử dụng disable notification command: 03 20 01 00 ee 99
+      const disableNotifyCmd = [0x03, 0x20, 0x01, 0x00, 0xee, 0x99];
+      
+      // Tắt thông báo trên kênh chính
+      await device.writeCharacteristicWithResponseForService(
+        SERVICE_UUID,
+        WRITE_UUID,
+        base64.fromByteArray(new Uint8Array(disableNotifyCmd))
+      ).catch((error: Error) => {
+        addLog(` ⚠️ Lỗi khi tắt thông báo chính: ${error.message}`);
+      });
+      
+      await new Promise(resolve => setTimeout(resolve, 300));
+      
+      // Tắt thông báo trên kênh nhịp tim
+      // Sử dụng disable heart rate notification command: 03 2f 01 00 ee 99
+      const disableHRNotifyCmd = [0x03, 0x2f, 0x01, 0x00, 0xee, 0x99];
+      
+      await device.writeCharacteristicWithResponseForService(
+        SERVICE_UUID,
+        WRITE_UUID,
+        base64.fromByteArray(new Uint8Array(disableHRNotifyCmd))
+      ).catch((error: Error) => {
+        addLog(` ⚠️ Lỗi khi tắt thông báo nhịp tim: ${error.message}`);
+      });
+    } catch (error) {
+      // Không gây lỗi nếu không thực hiện được
+      addLog(` ⚠️ Lưu ý khi hủy notifications: ${error}`);
+    }
+    
+    addLog(" ✅ Đã dừng đo nhịp tim thành công!");
     
     // Hiển thị kết quả nếu có
     if (hrValue !== null) {
@@ -365,7 +413,7 @@ export const stopHeartRateMeasurement = async (
       );
     }
   } catch (error) {
-    addLog(` Lỗi khi dừng đo nhịp tim: ${error}`);
+    addLog(` ❌ Lỗi khi dừng đo nhịp tim: ${error}`);
   }
 };
 
@@ -527,19 +575,67 @@ export const startHeartRateMeasurement = async (
   addLog: (message: string) => void
 ): Promise<boolean> => {
   if (!device) {
-    addLog(" Không có thiết bị để đo nhịp tim!");
+    addLog(" ❌ Không có thiết bị để đo nhịp tim!");
     return false;
   }
   
   try {
+    // Kiểm tra xem thiết bị có được kết nối không
+    let isConnected = false;
+    try {
+      isConnected = await device.isConnected();
+    } catch (error) {
+      addLog(` ❌ Thiết bị mất kết nối: ${error}`);
+      return false;
+    }
+    
+    if (!isConnected) {
+      addLog(" ❌ Thiết bị không được kết nối!");
+      return false;
+    }
+    
+    // Hủy bỏ các subscription hiện tại nếu có
+    if (notificationSubscription) {
+      try {
+        addLog(" Hủy đăng ký thông báo trước khi bắt đầu đo mới...");
+        if (typeof notificationSubscription.remove === 'function') {
+          notificationSubscription.remove();
+          addLog(" ✅ Đã hủy đăng ký thông báo trước đó");
+        }
+        // Đặt lại subscription bất kể kết quả
+        setNotificationSubscription(null);
+      } catch (error) {
+        addLog(` ⚠️ Không thể hủy thông báo cũ: ${error}`);
+        // Vẫn tiếp tục vì đây có thể chỉ là cảnh báo, không phải lỗi
+      }
+    }
+    
     // Đặt lại giá trị nhịp tim
     setHrValue(null);
     
-    // Thiết lập các callback để nhận dữ liệu
-    addLog(" Thiết lập callback nhận dữ liệu nhịp tim...");
-    
     // Thiết lập trạng thái đo
     setMeasuring(true);
+    
+    // Gửi thêm lệnh refresh trước khi bắt đầu đo
+    try {
+      // Sử dụng lệnh reset thông báo: 03 09 09 00 01 00 02 a0 de
+      const resetCommand = [3, 9, 9, 0, 1, 0, 2, 0xa0, 0xde];
+      
+      addLog(" Gửi lệnh làm sạch trạng thái trước khi đo...");
+      await device.writeCharacteristicWithResponseForService(
+        SERVICE_UUID,
+        WRITE_UUID,
+        base64.fromByteArray(new Uint8Array(resetCommand))
+      );
+      
+      await new Promise(resolve => setTimeout(resolve, 500));
+    } catch (error) {
+      addLog(` ⚠️ Lưu ý khi gửi lệnh reset: ${error}`);
+      // Vẫn tiếp tục, đây chỉ là bước dự phòng
+    }
+    
+    // Thiết lập các callback để nhận dữ liệu
+    addLog(" Thiết lập callback nhận dữ liệu nhịp tim...");
     
     // Thiết lập callback để nhận dữ liệu từ thiết bị
     const subscription = device.monitorCharacteristicForService(
@@ -567,29 +663,51 @@ export const startHeartRateMeasurement = async (
       }
     );
     
+    addLog(" ✅ Đã đăng ký callback chính");
     setNotificationSubscription(subscription);
-    addLog(" Đã thiết lập callback nhận dữ liệu");
     
-    // Đăng ký các callback khác nếu cần
-    const additionalSubscriptions = await setupRealDataCallback(
-      device,
-      (data: number[], setMeasuringCallback?: (measuring: boolean) => void) => handleData(
-        data,
-        setHrValue,
-        setDataBuffer,
-        dataBuffer,
-        addLog,
-        setMeasuringCallback || setMeasuring
-      ),
-      addLog,
-      setMeasuring
-    );
+    // Không gọi setupRealDataCallback trực tiếp nữa để tránh xung đột subscription
+    // Nếu cần, hãy đăng ký thêm kênh HEART_RATE_NOTIFY_UUID
+    try {
+      // Một subscription riêng cho kênh nhịp tim
+      device.monitorCharacteristicForService(
+        SERVICE_UUID,
+        HEART_RATE_NOTIFY_UUID,
+        (error, characteristic) => {
+          if (error) {
+            addLog(` Lỗi nhận thông báo từ HEART_RATE_NOTIFY_UUID: ${error.message}`);
+            return;
+          }
+          
+          if (characteristic?.value) {
+            const data = base64.toByteArray(characteristic.value);
+            addLog(` Dữ liệu từ HEART_RATE_NOTIFY_UUID: ${Array.from(data).map(b => b.toString(16).padStart(2, '0')).join(' ')}`);
+            
+            // Xử lý dữ liệu nhịp tim
+            handleData(
+              Array.from(data),
+              setHrValue,
+              setDataBuffer,
+              dataBuffer,
+              addLog,
+              setMeasuring
+            );
+          }
+        },
+        // Bỏ transactionId để nó không gây xung đột với các subscription khác
+      );
+      
+      addLog(" ✅ Đã đăng ký thêm kênh nhịp tim");
+    } catch (error) {
+      addLog(` ⚠️ Không thể đăng ký kênh nhịp tim phụ: ${error}`);
+      // Vẫn tiếp tục vì đây chỉ là extra monitoring
+    }
     
     // Gửi lệnh đo
     addLog(" Gửi lệnh bắt đầu đo nhịp tim...");
     await sendHeartRateCommands(device, addLog);
     
-    addLog(" Đã bắt đầu đo nhịp tim");
+    addLog(" ✅ Đã bắt đầu đo nhịp tim");
     Alert.alert(
       "Đo nhịp tim",
       "Đang đo nhịp tim của bạn. Vui lòng giữ nguyên nhẫn trên ngón tay và chờ kết quả.",
@@ -598,7 +716,7 @@ export const startHeartRateMeasurement = async (
     
     return true;
   } catch (error) {
-    addLog(` Lỗi khi bắt đầu đo nhịp tim: ${error}`);
+    addLog(` ❌ Lỗi khi bắt đầu đo nhịp tim: ${error}`);
     setMeasuring(false);
     return false;
   }
