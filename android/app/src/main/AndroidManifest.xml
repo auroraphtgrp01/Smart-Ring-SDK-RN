@@ -10,6 +10,8 @@
   <uses-permission android:name="android.permission.SYSTEM_ALERT_WINDOW"/>
   <uses-permission android:name="android.permission.VIBRATE"/>
   <uses-permission android:name="android.permission.WRITE_EXTERNAL_STORAGE"/>
+  <uses-permission android:name="android.permission.FOREGROUND_SERVICE"/>
+  <uses-permission android:name="android.permission.WAKE_LOCK"/>
   <queries>
     <intent>
       <action android:name="android.intent.action.VIEW"/>
@@ -33,5 +35,11 @@
         <data android:scheme="com.codevjp001.SmartRingRN2"/>
       </intent-filter>
     </activity>
+    
+    <!-- Foreground service for maintaining Bluetooth connection -->
+    <service
+      android:name=".BluetoothForegroundService"
+      android:enabled="true"
+      android:exported="false" />
   </application>
 </manifest>

@@ -1,5 +1,5 @@
-import React, { useState, useEffect } from 'react';
-import { StyleSheet, Text, View, TouchableOpacity, ScrollView, Alert, Platform } from 'react-native';
+import React, { useState, useEffect, useRef } from 'react';
+import { StyleSheet, Text, View, TouchableOpacity, ScrollView, Alert, Platform, AppState, AppStateStatus } from 'react-native';
 import { Device, Characteristic } from 'react-native-ble-plx';
 import {
   manager,
@@ -7,6 +7,9 @@ import {
   WRITE_UUID,
   NOTIFY_UUID
 } from './constants';
+
+// Import BackgroundService
+import { backgroundService } from './BackgroundService';
 
 import {
   // Functionsr
@@ -73,6 +76,69 @@ export default function App() {
     setLogs(prev => [...prev, `${new Date().toLocaleTimeString()}: ${message}`]);
   };
 
+  // Kiểm tra trạng thái kết nối của thiết bị
+  const checkDeviceConnection = async () => {
+    if (device) {
+      try {
+        const isConnected = await device.isConnected();
+        if (!isConnected) {
+          addLog("⚠️ Thiết bị đã mất kết nối!");
+          // Thông báo cho BackgroundService trước
+          backgroundService.setCurrentDevice(null);
+          
+          // Reset trạng thái ứng dụng
+          setDevice(null);
+          setWriteCharacteristic(null);
+          setNotifyCharacteristic(null);
+          setIsDiscoverService(false);
+          setSpo2Value(null);
+          setPrValue(null);
+          setHrValue(null);
+          setMeasuring(false);
+          setMeasuringHeartRate(false);
+          
+          // Bắt đầu quét lại nếu cần
+          backgroundService.startReconnectTimer();
+        } else {
+          addLog("✅ Thiết bị vẫn đang kết nối");
+          // Đảm bảo thiết bị được đăng ký với BackgroundService
+          backgroundService.setCurrentDevice(device);
+        }
+      } catch (error) {
+        addLog(`❌ Lỗi khi kiểm tra kết nối: ${error}`);
+      }
+    }
+  };
+
+  // Theo dõi trạng thái của ứng dụng (foreground/background)
+  useEffect(() => {
+    // Lắng nghe sự kiện thay đổi trạng thái ứng dụng
+    const appStateSubscription = AppState.addEventListener('change', (nextAppState: AppStateStatus) => {
+      addLog(`Trạng thái ứng dụng thay đổi: ${nextAppState}`);
+      
+      // Khi ứng dụng chuyển sang background
+      if (nextAppState === 'background' || nextAppState === 'inactive') {
+        addLog('Ứng dụng chuyển sang background');
+        // Đảm bảo thiết bị được đăng ký với BackgroundService
+        if (device) {
+          addLog('Duy trì kết nối Bluetooth trong background');
+          backgroundService.setCurrentDevice(device);
+        }
+      }
+      // Khi ứng dụng trở lại foreground
+      else if (nextAppState === 'active') {
+        addLog('Ứng dụng trở lại foreground');
+        // Kiểm tra kết nối
+        checkDeviceConnection();
+      }
+    });
+    
+    // Cleanup function
+    return () => {
+      appStateSubscription.remove();
+    };
+  }, [device]); // Chỉ chạy lại khi device thay đổi
+
   // Setup permissions
   useEffect(() => {
     const setupBluetooth = async () => {
@@ -97,6 +163,9 @@ export default function App() {
         } else {
           addLog("✅ Bluetooth đã sẵn sàng!");
           setBluetoothReady(true);
+          
+          // Thiết lập callback log cho BackgroundService
+          backgroundService.setLogCallback(addLog);
         }
       } catch (error) {
         addLog(`❌ Lỗi khởi tạo Bluetooth: ${error}`);
@@ -104,12 +173,23 @@ export default function App() {
     };
 
     setupBluetooth();
+    
+    // Thiết lập kiểm tra kết nối định kỳ
+    const connectionCheckInterval = setInterval(() => {
+      if (device) {
+        checkDeviceConnection();
+      }
+    }, 30000); // Kiểm tra mỗi 30 giây
 
     // Cleanup khi component unmount
     return () => {
       if (device) {
         disconnectDeviceLocal();
       }
+      // Hủy BackgroundService khi component unmount
+      backgroundService.destroy();
+      // Xóa interval kiểm tra kết nối
+      clearInterval(connectionCheckInterval);
     };
   }, [device]);
 
@@ -117,15 +197,54 @@ export default function App() {
   const disconnectDeviceLocal = async () => {
     try {
       if (device) {
+        // Thông báo cho BackgroundService trước khi ngắt kết nối
+        // Đặt trước để đảm bảo background service không cố gắng duy trì kết nối
+        backgroundService.setCurrentDevice(null);
+        
         // Dừng đo lường nếu đang đo
         if (measuring) {
-          await stopMeasurementLocal();
+          try {
+            await stopMeasurementLocal();
+          } catch (e) {
+            addLog(`Lỗi khi dừng đo: ${e}`);
+          }
+        }
+        
+        // Hủy đăng ký các subscription
+        if (notificationSubscription) {
+          try {
+            notificationSubscription.remove();
+          } catch (e) {
+            addLog(`Lỗi khi hủy thông báo: ${e}`);
+          }
+          setNotificationSubscription(null);
+        }
+        
+        // Hủy các subscription bổ sung
+        for (const sub of additionalSubscriptions) {
+          try {
+            sub.remove();
+          } catch (e) {
+            addLog(`Lỗi khi hủy subscription: ${e}`);
+          }
+        }
+        setAdditionalSubscriptions([]);
+        
+        // Dừng polling nếu đang chạy
+        if (pollingIntervalId) {
+          clearInterval(pollingIntervalId);
+          setPollingIntervalId(null);
         }
 
         addLog(`Đang ngắt kết nối từ thiết bị ${device.name || 'Không tên'} (${device.id})...`);
-        await disconnectDevice(device, addLog);
-        addLog('Đã ngắt kết nối thành công');
-
+        try {
+          await disconnectDevice(device, addLog);
+          addLog('Đã ngắt kết nối thành công');
+        } catch (disconnectError) {
+          addLog(`Lỗi khi ngắt kết nối thiết bị: ${disconnectError}`);
+          // Tiếp tục để reset state ngay cả khi ngắt kết nối thất bại
+        }
+        
         // Reset state
         setDevice(null);
         setWriteCharacteristic(null);
@@ -133,15 +252,37 @@ export default function App() {
         setIsDiscoverService(false);
         setSpo2Value(null);
         setPrValue(null);
+        setHrValue(null);
+        setMeasuring(false);
+        setMeasuringHeartRate(false);
       }
     } catch (error) {
       addLog(`Lỗi khi ngắt kết nối: ${error}`);
+      
+      // Reset state ngay cả khi có lỗi
+      setDevice(null);
+      setWriteCharacteristic(null);
+      setNotifyCharacteristic(null);
+      setIsDiscoverService(false);
+      setSpo2Value(null);
+      setPrValue(null);
+      setHrValue(null);
+      setMeasuring(false);
+      setMeasuringHeartRate(false);
+      
+      // Đảm bảo BackgroundService cũng được reset
+      backgroundService.setCurrentDevice(null);
     }
   };
 
   // Quét tìm thiết bị
   const scanDevices = async () => {
     try {
+      if (!bluetoothReady) {
+        addLog("❌ Bluetooth chưa sẵn sàng!");
+        return;
+      }
+      
       setScanning(true);
       setDevices([]);
       addLog("Đang quét tìm thiết bị...");
@@ -150,14 +291,14 @@ export default function App() {
       manager.stopDeviceScan();
 
       // Bắt đầu quét mới
-      manager.startDeviceScan(null, null, (error, device) => {
+      manager.startDeviceScan(null, { allowDuplicates: false }, (error, device) => {
         if (error) {
           addLog(`❌ Lỗi khi quét: ${error}`);
           setScanning(false);
           return;
         }
 
-        if (device && device.name && device.name.startsWith("R12M")) {
+        if (device && device.name && device.name.includes("R12M")) {
           // Thêm thiết bị vào danh sách nếu chưa có
           setDevices(prevDevices => {
             if (!prevDevices.some(d => d.id === device.id)) {
@@ -180,6 +321,23 @@ export default function App() {
       setScanning(false);
     }
   };
+
+  // Thiết lập kiểm tra kết nối định kỳ
+  useEffect(() => {
+    // Kiểm tra kết nối mỗi 15 giây
+    const checkConnectionInterval = setInterval(() => {
+      if (device) {
+        checkDeviceConnection();
+      }
+    }, 15000);
+    
+    // Kiểm tra ngay lập tức khi component mount hoặc device thay đổi
+    if (device) {
+      checkDeviceConnection();
+    }
+    
+    return () => clearInterval(checkConnectionInterval);
+  }, [device]);
 
   // Thiết lập các đặc tính (characteristics) cần thiết
   const setupCharacteristics = async (device: Device, addLog: (message: string) => void) => {
@@ -575,6 +733,9 @@ export default function App() {
                 if (connectedDevice) {
                   setDevice(connectedDevice);
                   addLog('Đã kết nối thành công!');
+                  
+                  // Cập nhật thiết bị hiện tại cho BackgroundService
+                  backgroundService.setCurrentDevice(connectedDevice);
 
                   // Thiết lập các đặc tính
                   setupCharacteristics(connectedDevice, addLog)
