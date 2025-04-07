@@ -10,6 +10,8 @@ import android.os.Build;
 import android.os.IBinder;
 import androidx.annotation.Nullable;
 import androidx.core.app.NotificationCompat;
+import com.codevjp001.SmartRingRN2.MainActivity;
+import com.codevjp001.SmartRingRN2.R;
 
 public class BluetoothForegroundService extends Service {
     private static final String CHANNEL_ID = "BluetoothForegroundServiceChannel";
@@ -23,7 +25,6 @@ public class BluetoothForegroundService extends Service {
 
     @Override
     public int onStartCommand(Intent intent, int flags, int startId) {
-        // Create notification for foreground service
         Intent notificationIntent = new Intent(this, MainActivity.class);
         PendingIntent pendingIntent = PendingIntent.getActivity(
                 this,
@@ -39,10 +40,8 @@ public class BluetoothForegroundService extends Service {
                 .setContentIntent(pendingIntent)
                 .build();
 
-        // Start foreground service with notification
         startForeground(NOTIFICATION_ID, notification);
 
-        // Service will be restarted if it gets terminated
         return START_STICKY;
     }
 

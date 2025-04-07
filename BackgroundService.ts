@@ -38,6 +38,7 @@ class BackgroundConnectionService {
   private reconnectAttempts: number = 0;
   private maxReconnectAttempts: number = 10; // Giới hạn số lần thử kết nối lại
   private logCallback: (message: string) => void = console.log;
+  private onDeviceReconnected: ((device: Device) => void) | null = null;
 
   constructor() {
     // Khởi tạo theo dõi trạng thái ứng dụng
@@ -47,18 +48,22 @@ class BackgroundConnectionService {
   // Đăng ký lắng nghe sự kiện AppState
   private subscribeToAppState() {
     // Sử dụng cách tiếp cận tương thích với cả phiên bản cũ và mới của React Native
-    this.appStateSubscription = { remove: () => {} };
-    
-    // Sử dụng useEffect để đăng ký sự kiện
+    // Đăng ký sự kiện AppState.change
     const subscription = AppState.addEventListener('change', this.handleAppStateChange);
     
     // Lưu hàm remove để có thể gọi sau này
-    this.appStateSubscription = subscription || { remove: () => {} };
+    this.appStateSubscription = subscription;
   }
 
   // Thiết lập callback cho log
   setLogCallback(callback: (message: string) => void) {
     this.logCallback = callback;
+  }
+  
+  // Thiết lập callback khi thiết bị được kết nối lại
+  setReconnectionCallback(callback: (device: Device) => void) {
+    this.onDeviceReconnected = callback;
+    this.logCallback('Đã thiết lập callback khi thiết bị được kết nối lại');
   }
 
   // Xử lý khi trạng thái ứng dụng thay đổi
@@ -77,6 +82,7 @@ class BackgroundConnectionService {
       
       // Nếu đang không có kết nối và có thiết bị đã kết nối trước đó, bắt đầu quét
       if (!this.currentConnectedDevice) {
+        this.logCallback('Không có thiết bị kết nối, bắt đầu quét trong background');
         this.startReconnectTimer();
       } else {
         // Đảm bảo kết nối vẫn được duy trì khi ở background
@@ -85,11 +91,12 @@ class BackgroundConnectionService {
       }
     }
     
+    // Cập nhật trạng thái hiện tại
     this.appState = nextAppState;
   };
 
   // Thiết lập thiết bị hiện tại
-  setCurrentDevice(device: Device | null) {
+  public setCurrentDevice(device: Device | null) {
     this.currentConnectedDevice = device;
     
     // Nếu có thiết bị mới được kết nối, lưu thông tin
@@ -123,12 +130,12 @@ class BackgroundConnectionService {
         
         if (!isConnected) {
           // Nếu mất kết nối, bắt đầu quét lại
-          this.currentConnectedDevice = null;
+          this.setCurrentDevice(null);
           this.startReconnectTimer();
         }
       } catch (error) {
         this.logCallback(`Lỗi khi kiểm tra kết nối: ${error}`);
-        this.currentConnectedDevice = null;
+        this.setCurrentDevice(null);
         this.startReconnectTimer();
       }
     } else {
@@ -138,12 +145,53 @@ class BackgroundConnectionService {
   }
 
   // Bắt đầu timer để quét và kết nối lại
-  startReconnectTimer() {
+  public startReconnectTimer() {
     // Dừng timer hiện tại nếu có
     this.stopReconnectTimer();
     
-    // Bắt đầu timer mới, quét mỗi 10 giây
+    // Kiểm tra trạng thái Bluetooth trước khi bắt đầu quét
+    manager.state().then(state => {
+      if (state !== 'PoweredOn') {
+        this.logCallback('Bluetooth không được bật. Không thể quét tìm thiết bị.');
+        
+        // Theo dõi trạng thái Bluetooth để bắt đầu quét khi Bluetooth được bật lại
+        const subscription = manager.onStateChange((newState) => {
+          if (newState === 'PoweredOn') {
+            this.logCallback('Bluetooth đã được bật lại. Bắt đầu quét tìm thiết bị...');
+            this.reconnectAttempts = 0; // Đặt lại số lần thử
+            this.startActualReconnectTimer();
+            subscription.remove();
+          }
+        }, true);
+        
+        return;
+      }
+      
+      this.startActualReconnectTimer();
+    });
+  }
+  
+  // Bắt đầu timer quét thực tế
+  private startActualReconnectTimer() {
+    // Đặt lại số lần thử kết nối
+    this.reconnectAttempts = 0;
+    
+    // Bắt đầu timer mới, quét mỗi 5 giây để đảm bảo hoạt động khi màn hình tắt
     this.reconnectTimer = setInterval(async () => {
+      // Kiểm tra trạng thái Bluetooth
+      const btState = await manager.state();
+      if (btState !== 'PoweredOn') {
+        this.logCallback('Bluetooth không được bật. Tạm dừng quét.');
+        return;
+      }
+      
+      // Kiểm tra nếu đã có thiết bị kết nối thì dừng quét
+      if (this.currentConnectedDevice) {
+        this.logCallback('Đã có thiết bị kết nối, dừng quét');
+        this.stopReconnectTimer();
+        return;
+      }
+      
       // Kiểm tra số lần thử kết nối
       if (this.reconnectAttempts >= this.maxReconnectAttempts) {
         this.logCallback(`Đã đạt giới hạn thử kết nối (${this.maxReconnectAttempts} lần). Dừng quét.`);
@@ -156,6 +204,7 @@ class BackgroundConnectionService {
       
       // Nếu đang quét, bỏ qua
       if (this.isScanning) {
+        this.logCallback('Đang trong quá trình quét, bỏ qua lần quét này');
         return;
       }
       
@@ -169,7 +218,14 @@ class BackgroundConnectionService {
       
       this.logCallback(`Quét lại thiết bị đã kết nối trước đó: ${lastDevice.name} (${lastDevice.id})`);
       this.scanForLastDevice(lastDevice.id);
-    }, 10000); // 10 giây
+    }, 5000); // 5 giây
+    
+    // Quét ngay lập tức lần đầu tiên
+    const lastDevice = getLastConnectedDevice();
+    if (lastDevice) {
+      this.logCallback(`Quét ngay lập tức tìm thiết bị: ${lastDevice.name} (${lastDevice.id})`);
+      this.scanForLastDevice(lastDevice.id);
+    }
     
     this.logCallback('Đã bắt đầu timer quét lại thiết bị');
   }
@@ -184,13 +240,37 @@ class BackgroundConnectionService {
   }
 
   // Quét tìm thiết bị đã kết nối trước đó
-  private scanForLastDevice(lastDeviceId: string) {
-    if (this.isScanning) {
+  private async scanForLastDevice(lastDeviceId: string) {
+    // Kiểm tra trạng thái Bluetooth trước khi quét
+    const btState = await manager.state();
+    if (btState !== 'PoweredOn') {
+      this.logCallback('Bluetooth không được bật. Không thể quét tìm thiết bị.');
+      this.isScanning = false;
       return;
     }
     
+    if (this.isScanning) {
+      this.logCallback('Đang quét, bỏ qua yêu cầu quét mới');
+      return;
+    }
+    
+    // Kiểm tra nếu đã có thiết bị kết nối
+    if (this.currentConnectedDevice) {
+      try {
+        const isConnected = await this.currentConnectedDevice.isConnected();
+        if (isConnected) {
+          this.logCallback('Đã có thiết bị kết nối, không cần quét lại');
+          this.isScanning = false;
+          return;
+        }
+      } catch (error) {
+        this.logCallback(`Lỗi khi kiểm tra kết nối hiện tại: ${error}`);
+        // Tiếp tục quét vì có lỗi khi kiểm tra kết nối
+      }
+    }
+    
     this.isScanning = true;
-    this.logCallback('Bắt đầu quét tìm thiết bị đã kết nối trước đó...');
+    this.logCallback(`Bắt đầu quét tìm thiết bị đã kết nối trước đó... (lần thử ${this.reconnectAttempts}/${this.maxReconnectAttempts})`);
     
     // Dừng bất kỳ quá trình quét nào đang diễn ra
     manager.stopDeviceScan();
@@ -199,6 +279,15 @@ class BackgroundConnectionService {
     manager.startDeviceScan(null, { allowDuplicates: false }, async (error, device) => {
       if (error) {
         this.logCallback(`Lỗi khi quét thiết bị: ${error.message}`);
+        this.isScanning = false;
+        return;
+      }
+      
+      // Kiểm tra trạng thái Bluetooth trong quá trình quét
+      const currentBtState = await manager.state();
+      if (currentBtState !== 'PoweredOn') {
+        this.logCallback('Bluetooth đã bị tắt trong quá trình quét. Dừng quét.');
+        manager.stopDeviceScan();
         this.isScanning = false;
         return;
       }
@@ -217,6 +306,18 @@ class BackgroundConnectionService {
           if (connectedDevice) {
             this.logCallback(`Đã kết nối lại với thiết bị: ${connectedDevice.name}`);
             this.setCurrentDevice(connectedDevice);
+            
+            // Đặt lại số lần thử kết nối
+            this.reconnectAttempts = 0;
+            
+            // Dừng timer quét vì đã kết nối thành công
+            this.stopReconnectTimer();
+            
+            // Thông báo cho App.tsx rằng thiết bị đã được kết nối lại
+            if (this.onDeviceReconnected) {
+              this.logCallback('Gọi callback khi thiết bị được kết nối lại');
+              this.onDeviceReconnected(connectedDevice);
+            }
           }
         } catch (error) {
           this.logCallback(`Lỗi khi kết nối lại với thiết bị: ${error}`);
@@ -224,26 +325,52 @@ class BackgroundConnectionService {
       }
     });
     
-    // Dừng quét sau 5 giây để tiết kiệm pin
+    // Dừng quét sau 8 giây để tiết kiệm pin nhưng đủ thời gian để tìm thiết bị
     setTimeout(() => {
       if (this.isScanning) {
         manager.stopDeviceScan();
         this.isScanning = false;
         this.logCallback('Kết thúc quét thiết bị');
       }
-    }, 5000);
+    }, 8000);
   }
 
-  // Biến lưu trữ subscription
+
+
+  // Biến lưu trữ subscription và interval
   private appStateSubscription: { remove: () => void } | null = null;
+  private keepAliveInterval: NodeJS.Timeout | null = null;
+  private keepAliveAppStateSubscription: { remove: () => void } | null = null;
   
   // Giữ kết nối Bluetooth hoạt động trong background
-  private keepConnectionAlive() {
+  public keepConnectionAlive() {
+    // Dừng interval hiện tại nếu có
+    this.stopKeepAlive();
+    
     if (!this.currentConnectedDevice) return;
     
     // Tạo một hàm để thực hiện ping đến thiết bị
     const pingDevice = async () => {
       try {
+        // Kiểm tra trạng thái Bluetooth trước
+        const btState = await manager.state();
+        if (btState !== 'PoweredOn') {
+          this.logCallback('Bluetooth không được bật. Không thể duy trì kết nối.');
+          
+          // Theo dõi trạng thái Bluetooth để kết nối lại khi Bluetooth được bật
+          const subscription = manager.onStateChange((newState) => {
+            if (newState === 'PoweredOn') {
+              this.logCallback('Bluetooth đã được bật lại. Thử kết nối lại...');
+              this.startReconnectTimer();
+              subscription.remove();
+            }
+          }, true);
+          
+          // Đặt lại thiết bị hiện tại
+          this.setCurrentDevice(null);
+          return;
+        }
+        
         if (this.currentConnectedDevice) {
           // Kiểm tra xem thiết bị có còn kết nối không
           const isConnected = await this.currentConnectedDevice.isConnected();
@@ -258,6 +385,15 @@ class BackgroundConnectionService {
               }
             } catch (readError) {
               this.logCallback(`Lỗi khi ping thiết bị: ${readError}`);
+              // Thử lại kết nối nếu có lỗi khi đọc dịch vụ
+              if (this.reconnectAttempts < this.maxReconnectAttempts) {
+                this.reconnectAttempts++;
+                this.logCallback(`Thử kết nối lại lần ${this.reconnectAttempts}/${this.maxReconnectAttempts}`);
+              } else {
+                this.logCallback('Quá nhiều lần thử kết nối lại không thành công');
+                this.setCurrentDevice(null);
+                this.startReconnectTimer();
+              }
             }
           } else {
             this.logCallback('Thiết bị đã mất kết nối, bắt đầu quét lại');
@@ -276,21 +412,58 @@ class BackgroundConnectionService {
     // Thực hiện ping ngay lập tức
     pingDevice();
     
-    // Sau đó thiết lập ping định kỳ
-    const keepAliveInterval = setInterval(pingDevice, 5000); // 5 giây ping một lần
+    // Sau đó thiết lập ping định kỳ với thời gian ngắn hơn để đảm bảo hoạt động khi màn hình tắt
+    this.keepAliveInterval = setInterval(pingDevice, 3000); // 3 giây ping một lần
+    
+    // Theo dõi trạng thái Bluetooth để phát hiện khi Bluetooth bị tắt
+    const bluetoothStateSubscription = manager.onStateChange((state) => {
+      if (state !== 'PoweredOn') {
+        this.logCallback(`Bluetooth đã thay đổi trạng thái: ${state}. Tạm dừng giữ kết nối.`);
+        // Dừng ping và đặt lại thiết bị
+        this.stopKeepAlive();
+        this.setCurrentDevice(null);
+        
+        // Theo dõi khi Bluetooth được bật lại
+        const resubscription = manager.onStateChange((newState) => {
+          if (newState === 'PoweredOn') {
+            this.logCallback('Bluetooth đã được bật lại. Bắt đầu quét lại...');
+            this.startReconnectTimer();
+            resubscription.remove();
+          }
+        }, true);
+      }
+    }, false);
     
     // Đảm bảo interval được xóa khi AppState thay đổi
-    const appStateSubscription = AppState.addEventListener('change', (nextState: AppStateStatus) => {
+    this.keepAliveAppStateSubscription = AppState.addEventListener('change', (nextState: AppStateStatus) => {
       if (nextState === 'active') {
-        clearInterval(keepAliveInterval);
-        appStateSubscription.remove();
+        this.stopKeepAlive();
+        bluetoothStateSubscription.remove();
       }
     });
+    
+    this.logCallback('Đã bắt đầu giữ kết nối Bluetooth trong background');
+  }
+  
+  // Dừng quá trình giữ kết nối
+  public stopKeepAlive() {
+    if (this.keepAliveInterval) {
+      clearInterval(this.keepAliveInterval);
+      this.keepAliveInterval = null;
+      this.logCallback('Đã dừng interval giữ kết nối');
+    }
+    
+    if (this.keepAliveAppStateSubscription) {
+      this.keepAliveAppStateSubscription.remove();
+      this.keepAliveAppStateSubscription = null;
+      this.logCallback('Đã hủy subscription giữ kết nối');
+    }
   }
 
   // Hủy dịch vụ
   destroy() {
     this.stopReconnectTimer();
+    this.stopKeepAlive();
     
     // Hủy đăng ký lắng nghe sự kiện AppState
     if (this.appStateSubscription) {

@@ -36,7 +36,6 @@
       </intent-filter>
     </activity>
     
-    <!-- Foreground service for maintaining Bluetooth connection -->
     <service
       android:name=".BluetoothForegroundService"
       android:enabled="true"

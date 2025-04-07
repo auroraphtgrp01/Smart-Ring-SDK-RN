@@ -9,7 +9,7 @@ import {
 } from './constants';
 
 // Import BackgroundService
-import { backgroundService } from './BackgroundService';
+import { backgroundService, getLastConnectedDevice } from './BackgroundService';
 
 import {
   // Functionsr
@@ -69,6 +69,10 @@ export default function App() {
   const [hrValue, setHrValue] = useState<number | null>(null); // Heart Rate - Nhịp tim riêng biệt
   const [hrDataBuffer, setHrDataBuffer] = useState<number[][]>([]);
   const [hrNotificationSubscription, setHrNotificationSubscription] = useState<any>(null);
+  
+  // Thêm state cho theo dõi trạng thái ứng dụng và kết nối
+  const [appState, setAppState] = useState<AppStateStatus>(AppState.currentState);
+  const [connectionCheckTimer, setConnectionCheckTimer] = useState<NodeJS.Timeout | null>(null);
 
   // Logging function
   const addLog = (message: string) => {
@@ -103,6 +107,11 @@ export default function App() {
           addLog("✅ Thiết bị vẫn đang kết nối");
           // Đảm bảo thiết bị được đăng ký với BackgroundService
           backgroundService.setCurrentDevice(device);
+          
+          // Nếu ứng dụng đang ở background, đảm bảo kết nối được duy trì
+          if (appState !== 'active') {
+            backgroundService.keepConnectionAlive();
+          }
         }
       } catch (error) {
         addLog(`❌ Lỗi khi kiểm tra kết nối: ${error}`);
@@ -113,31 +122,118 @@ export default function App() {
   // Theo dõi trạng thái của ứng dụng (foreground/background)
   useEffect(() => {
     // Lắng nghe sự kiện thay đổi trạng thái ứng dụng
-    const appStateSubscription = AppState.addEventListener('change', (nextAppState: AppStateStatus) => {
-      addLog(`Trạng thái ứng dụng thay đổi: ${nextAppState}`);
-      
-      // Khi ứng dụng chuyển sang background
-      if (nextAppState === 'background' || nextAppState === 'inactive') {
-        addLog('Ứng dụng chuyển sang background');
-        // Đảm bảo thiết bị được đăng ký với BackgroundService
-        if (device) {
-          addLog('Duy trì kết nối Bluetooth trong background');
-          backgroundService.setCurrentDevice(device);
-        }
-      }
-      // Khi ứng dụng trở lại foreground
-      else if (nextAppState === 'active') {
-        addLog('Ứng dụng trở lại foreground');
-        // Kiểm tra kết nối
-        checkDeviceConnection();
-      }
-    });
+    const appStateSubscription = AppState.addEventListener('change', handleAppStateChange);
+    
+    // Thiết lập kiểm tra kết nối định kỳ
+    startConnectionCheckTimer();
     
     // Cleanup function
     return () => {
       appStateSubscription.remove();
+      stopConnectionCheckTimer();
     };
   }, [device]); // Chỉ chạy lại khi device thay đổi
+  
+  // Xử lý khi trạng thái ứng dụng thay đổi
+  const handleAppStateChange = (nextAppState: AppStateStatus) => {
+    addLog(`Trạng thái ứng dụng thay đổi: ${appState} -> ${nextAppState}`);
+    
+    // Nếu ứng dụng chuyển từ background sang active
+    if (appState.match(/inactive|background/) && nextAppState === 'active') {
+      addLog('Ứng dụng trở lại foreground');
+      // Kiểm tra kết nối hiện tại
+      checkDeviceConnection();
+    } 
+    // Nếu ứng dụng chuyển từ active sang background
+    else if (appState === 'active' && nextAppState.match(/inactive|background/)) {
+      addLog('Ứng dụng chuyển sang background');
+      
+      if (device) {
+        // Đảm bảo kết nối vẫn được duy trì khi ở background
+        addLog('Duy trì kết nối Bluetooth trong background');
+        backgroundService.setCurrentDevice(device);
+        backgroundService.keepConnectionAlive();
+      } else {
+        // Nếu không có thiết bị hiện tại, bắt đầu quét trong background
+        addLog('Không có thiết bị kết nối, bắt đầu quét trong background');
+        backgroundService.startReconnectTimer();
+      }
+    }
+    
+    // Cập nhật trạng thái hiện tại
+    setAppState(nextAppState);
+  };
+  
+  // Bắt đầu timer kiểm tra kết nối định kỳ
+  const startConnectionCheckTimer = () => {
+    // Dừng timer hiện tại nếu có
+    stopConnectionCheckTimer();
+    
+    // Thiết lập timer mới, kiểm tra mỗi 15 giây
+    const timer = setInterval(() => {
+      if (device) {
+        addLog('Kiểm tra kết nối định kỳ');
+        checkDeviceConnection();
+      }
+    }, 15000); // 15 giây
+    
+    setConnectionCheckTimer(timer);
+    addLog('Đã bắt đầu timer kiểm tra kết nối định kỳ');
+  };
+  
+  // Dừng timer kiểm tra kết nối
+  const stopConnectionCheckTimer = () => {
+    if (connectionCheckTimer) {
+      clearInterval(connectionCheckTimer);
+      setConnectionCheckTimer(null);
+      addLog('Đã dừng timer kiểm tra kết nối');
+    }
+  };
+  
+  // Xử lý khi thiết bị được kết nối lại từ BackgroundService
+  const handleDeviceReconnected = async (reconnectedDevice: Device) => {
+    addLog(`Thiết bị được kết nối lại từ background: ${reconnectedDevice.name}`);
+    
+    // Kiểm tra nếu đã có thiết bị được đặt trước đó
+    if (device && device.id === reconnectedDevice.id) {
+      addLog('Đã có thiết bị này trong UI, không cần cập nhật lại');
+      return;
+    }
+    
+    // Cập nhật trạng thái UI
+    setDevice(reconnectedDevice);
+    
+    // Thiết lập các đặc tính (characteristics) cần thiết
+    try {
+      // Thiết lập các đặc tính
+      const { writeCharacteristic: writeChar, notifyCharacteristic: notifyChar } = await setupCharacteristics(reconnectedDevice, addLog);
+      
+      // Cập nhật state
+      setWriteCharacteristic(writeChar);
+      setNotifyCharacteristic(notifyChar);
+      setIsDiscoverService(true);
+      
+      addLog('Đã thiết lập lại các đặc tính sau khi kết nối lại');
+      
+      // Bắt đầu lại các đo lường nếu trước đó đang đo
+      if (measuring) {
+        addLog('Tự động bắt đầu lại đo SpO2 sau khi kết nối lại');
+        setTimeout(() => {
+          startMeasurementLocal();
+        }, 1000);
+      }
+      
+      if (measuringHeartRate) {
+        addLog('Tự động bắt đầu lại đo nhịp tim sau khi kết nối lại');
+        setTimeout(() => {
+          startHeartRateMeasurementLocal();
+        }, 1500);
+      }
+    } catch (error) {
+      addLog(`Lỗi khi thiết lập lại các đặc tính: ${error}`);
+      setIsDiscoverService(false);
+    }
+  };
 
   // Setup permissions
   useEffect(() => {
@@ -166,6 +262,16 @@ export default function App() {
           
           // Thiết lập callback log cho BackgroundService
           backgroundService.setLogCallback(addLog);
+          
+          // Thiết lập callback khi thiết bị được kết nối lại
+          backgroundService.setReconnectionCallback(handleDeviceReconnected);
+          
+          // Khi khởi động app, tự động tìm và kết nối lại thiết bị cũ
+          const lastDevice = getLastConnectedDevice();
+          if (lastDevice) {
+            addLog(`Tìm thấy thiết bị đã kết nối trước đó: ${lastDevice.name}. Đang thử kết nối lại...`);
+            scanAndConnect();
+          }
         }
       } catch (error) {
         addLog(`❌ Lỗi khởi tạo Bluetooth: ${error}`);
@@ -173,6 +279,39 @@ export default function App() {
     };
 
     setupBluetooth();
+    
+    // Theo dõi trạng thái Bluetooth
+    const bluetoothStateSubscription = manager.onStateChange((state) => {
+      addLog(`Trạng thái Bluetooth thay đổi: ${state}`);
+      
+      if (state === 'PoweredOn') {
+        // Bluetooth vừa được bật
+        addLog('Bluetooth vừa được bật. Đang thử kết nối lại thiết bị cũ...');
+        setBluetoothReady(true);
+        
+        // Tự động tìm và kết nối lại thiết bị cũ
+        const lastDevice = getLastConnectedDevice();
+        if (lastDevice) {
+          addLog(`Tìm thấy thiết bị đã kết nối trước đó: ${lastDevice.name}. Đang thử kết nối lại...`);
+          scanAndConnect();
+        }
+      } else if (state === 'PoweredOff') {
+        // Bluetooth vừa bị tắt
+        addLog('Bluetooth vừa bị tắt. Các kết nối sẽ bị mất.');
+        setBluetoothReady(false);
+        
+        // Reset trạng thái UI
+        if (device) {
+          addLog('Đặt lại trạng thái UI do Bluetooth bị tắt');
+          setDevice(null);
+          setWriteCharacteristic(null);
+          setNotifyCharacteristic(null);
+          setIsDiscoverService(false);
+          setMeasuring(false);
+          setMeasuringHeartRate(false);
+        }
+      }
+    }, true);
     
     // Thiết lập kiểm tra kết nối định kỳ
     const connectionCheckInterval = setInterval(() => {
@@ -190,6 +329,8 @@ export default function App() {
       backgroundService.destroy();
       // Xóa interval kiểm tra kết nối
       clearInterval(connectionCheckInterval);
+      // Xóa subscription theo dõi trạng thái Bluetooth
+      bluetoothStateSubscription.remove();
     };
   }, [device]);
 
@@ -318,6 +459,85 @@ export default function App() {
       }, 10000);
     } catch (error) {
       addLog(`❌ Lỗi khi quét thiết bị: ${error}`);
+      setScanning(false);
+    }
+  };
+  
+  // Scan và kết nối tự động với thiết bị đã kết nối trước đó
+  const scanAndConnect = async () => {
+    if (!bluetoothReady) {
+      addLog("⚠️ Bluetooth chưa sẵn sàng!");
+      return;
+    }
+    
+    if (scanning) {
+      addLog("⚠️ Đang quét. Vui lòng đợi...");
+      return;
+    }
+    
+    const lastDevice = getLastConnectedDevice();
+    if (!lastDevice) {
+      addLog("Không có thông tin thiết bị đã kết nối trước đó");
+      return;
+    }
+    
+    setScanning(true);
+    addLog(`Đang quét tìm thiết bị đã kết nối trước đó: ${lastDevice.name} (${lastDevice.id})...`);
+    
+    try {
+      // Dừng bất kỳ quá trình quét nào đang diễn ra
+      manager.stopDeviceScan();
+      
+      // Bắt đầu quét
+      manager.startDeviceScan(null, { allowDuplicates: false }, async (error, device) => {
+        if (error) {
+          addLog(`❌ Lỗi khi quét thiết bị: ${error.message}`);
+          setScanning(false);
+          return;
+        }
+        
+        // Kiểm tra xem có phải thiết bị cần tìm không
+        if (device && (device.id === lastDevice.id || (device.name && device.name.includes("R12M")))) {
+          addLog(`Tìm thấy thiết bị đã kết nối trước đó: ${device.name} (${device.id})`);
+          
+          // Dừng quét
+          manager.stopDeviceScan();
+          setScanning(false);
+          
+          // Kết nối với thiết bị
+          try {
+            addLog(`Đang kết nối với thiết bị ${device.name || 'Không tên'} (${device.id})...`);
+            const connectedDevice = await connectToDevice(device, addLog);
+            
+            if (connectedDevice) {
+              addLog(`✅ Đã kết nối với thiết bị ${connectedDevice.name || 'Không tên'} (${connectedDevice.id})`);
+              setDevice(connectedDevice);
+              
+              // Thông báo cho BackgroundService về thiết bị đã kết nối
+              backgroundService.setCurrentDevice(connectedDevice);
+              
+              // Thiết lập các đặc tính (characteristics) cần thiết
+              const { writeCharacteristic, notifyCharacteristic } = await setupCharacteristics(connectedDevice, addLog);
+              
+              setWriteCharacteristic(writeCharacteristic);
+              setNotifyCharacteristic(notifyCharacteristic);
+            }
+          } catch (error) {
+            addLog(`❌ Lỗi khi kết nối với thiết bị: ${error}`);
+          }
+        }
+      });
+      
+      // Dừng quét sau 10 giây
+      setTimeout(() => {
+        if (scanning) {
+          manager.stopDeviceScan();
+          setScanning(false);
+          addLog("Kết thúc quét tìm thiết bị đã kết nối trước đó");
+        }
+      }, 10000);
+    } catch (error) {
+      addLog(`❌ Lỗi khi quét tìm thiết bị đã kết nối trước đó: ${error}`);
       setScanning(false);
     }
   };
