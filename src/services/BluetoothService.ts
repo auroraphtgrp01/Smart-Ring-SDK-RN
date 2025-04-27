@@ -7,7 +7,7 @@ import {
   NOTIFY_UUID,
   DEVICE_NAME,
   manager
-} from './constants';
+} from '../constants';
 
 // Kiểm tra quyền truy cập vị trí trên Android
 export const requestLocationPermission = async (): Promise<boolean> => {

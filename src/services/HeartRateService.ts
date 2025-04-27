@@ -11,7 +11,7 @@ import {
   HEART_RATE_STOP_COMMAND,
   HEART_RATE_NOTIFY_UUID,
   RESET_COMMAND_HR
-} from './constants';
+} from '../constants';
 
 import {
   MeasurementParams,

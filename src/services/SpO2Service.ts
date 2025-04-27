@@ -9,7 +9,7 @@ import {
   SPO2_PREPARE_COMMAND,
   SPO2_START_COMMAND,
   SPO2_STOP_COMMAND
-} from './constants';
+} from '../constants';
 
 import {
   MeasurementParams,

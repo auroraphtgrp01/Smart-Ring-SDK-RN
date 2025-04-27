@@ -6,10 +6,10 @@ import {
   SERVICE_UUID,
   WRITE_UUID,
   NOTIFY_UUID
-} from './constants';
+} from '../constants';
 
 // Import BackgroundService
-import { backgroundService, getLastConnectedDevice } from './BackgroundService';
+import { backgroundService, getLastConnectedDevice } from '../services/BackgroundService';
 
 import {
   // Functionsr
@@ -20,7 +20,7 @@ import {
   enableNotifications,
   setupCharacteristics,
   logData
-} from './BluetoothService';
+} from '../services/BluetoothService';
 
 import {
   // SpO2 related functions
@@ -30,7 +30,7 @@ import {
   setupPollingMechanism,
   pollData,
   startSpO2Measurement
-} from './SpO2Service';
+} from '../services/SpO2Service';
 
 // Import các hàm từ HeartRateService
 import {
@@ -38,12 +38,21 @@ import {
   stopHeartRateMeasurement,
   handleData as handleHeartRateData,
   startHeartRateMeasurement
-} from './HeartRateService';
+} from '../services/HeartRateService';
 
 // Import các hàm từ BaseMeasureService
 import {
   setupRealDataCallback
-} from './BaseMeasureService';
+} from '../services/BaseMeasureService';
+
+// Import SleepScreen để sử dụng màn hình theo dõi giấc ngủ
+import SleepScreen from '../screens/SleepScreen';
+
+// Định nghĩa các tab có sẵn trong ứng dụng
+const TABS = {
+  HOME: 'Trang chủ',
+  SLEEP: 'Giấc ngủ'
+};
 
 // Main App
 export default function App() {
@@ -69,15 +78,22 @@ export default function App() {
   const [hrValue, setHrValue] = useState<number | null>(null); // Heart Rate - Nhịp tim riêng biệt
   const [hrDataBuffer, setHrDataBuffer] = useState<number[][]>([]);
   const [hrNotificationSubscription, setHrNotificationSubscription] = useState<any>(null);
-  
+
   // Thêm state cho theo dõi trạng thái ứng dụng và kết nối
   const [appState, setAppState] = useState<AppStateStatus>(AppState.currentState);
   const [connectionCheckTimer, setConnectionCheckTimer] = useState<NodeJS.Timeout | null>(null);
 
+  // Thêm state để quản lý tab hiện tại
+  const [currentTab, setCurrentTab] = useState<string>(TABS.HOME);
+  
+  // Thêm state để quản lý việc hiển thị màn hình quản lý giấc ngủ
+  const [showSleepScreen, setShowSleepScreen] = useState<boolean>(false);
+
   // Logging function
   const addLog = (message: string) => {
-    console.log(message);
-    setLogs(prev => [...prev, `${new Date().toLocaleTimeString()}: ${message}`]);
+    console.log(`[APP DEBUG] ${message}`);
+    // Không cập nhật state logs để tránh hiển thị trên UI
+    // setLogs(prev => [...prev, `${new Date().toLocaleTimeString()}: ${message}`]);
   };
 
   // Kiểm tra trạng thái kết nối của thiết bị
@@ -89,7 +105,7 @@ export default function App() {
           addLog("⚠️ Thiết bị đã mất kết nối!");
           // Thông báo cho BackgroundService trước
           backgroundService.setCurrentDevice(null);
-          
+
           // Reset trạng thái ứng dụng
           setDevice(null);
           setWriteCharacteristic(null);
@@ -100,14 +116,14 @@ export default function App() {
           setHrValue(null);
           setMeasuring(false);
           setMeasuringHeartRate(false);
-          
+
           // Bắt đầu quét lại nếu cần
           backgroundService.startReconnectTimer();
         } else {
           addLog("✅ Thiết bị vẫn đang kết nối");
           // Đảm bảo thiết bị được đăng ký với BackgroundService
           backgroundService.setCurrentDevice(device);
-          
+
           // Nếu ứng dụng đang ở background, đảm bảo kết nối được duy trì
           if (appState !== 'active') {
             backgroundService.keepConnectionAlive();
@@ -123,31 +139,31 @@ export default function App() {
   useEffect(() => {
     // Lắng nghe sự kiện thay đổi trạng thái ứng dụng
     const appStateSubscription = AppState.addEventListener('change', handleAppStateChange);
-    
+
     // Thiết lập kiểm tra kết nối định kỳ
     startConnectionCheckTimer();
-    
+
     // Cleanup function
     return () => {
       appStateSubscription.remove();
       stopConnectionCheckTimer();
     };
   }, [device]); // Chỉ chạy lại khi device thay đổi
-  
+
   // Xử lý khi trạng thái ứng dụng thay đổi
   const handleAppStateChange = (nextAppState: AppStateStatus) => {
     addLog(`Trạng thái ứng dụng thay đổi: ${appState} -> ${nextAppState}`);
-    
+
     // Nếu ứng dụng chuyển từ background sang active
     if (appState.match(/inactive|background/) && nextAppState === 'active') {
       addLog('Ứng dụng trở lại foreground');
       // Kiểm tra kết nối hiện tại
       checkDeviceConnection();
-    } 
+    }
     // Nếu ứng dụng chuyển từ active sang background
     else if (appState === 'active' && nextAppState.match(/inactive|background/)) {
       addLog('Ứng dụng chuyển sang background');
-      
+
       if (device) {
         // Đảm bảo kết nối vẫn được duy trì khi ở background
         addLog('Duy trì kết nối Bluetooth trong background');
@@ -159,16 +175,16 @@ export default function App() {
         backgroundService.startReconnectTimer();
       }
     }
-    
+
     // Cập nhật trạng thái hiện tại
     setAppState(nextAppState);
   };
-  
+
   // Bắt đầu timer kiểm tra kết nối định kỳ
   const startConnectionCheckTimer = () => {
     // Dừng timer hiện tại nếu có
     stopConnectionCheckTimer();
-    
+
     // Thiết lập timer mới, kiểm tra mỗi 15 giây
     const timer = setInterval(() => {
       if (device) {
@@ -176,11 +192,11 @@ export default function App() {
         checkDeviceConnection();
       }
     }, 15000); // 15 giây
-    
+
     setConnectionCheckTimer(timer);
     addLog('Đã bắt đầu timer kiểm tra kết nối định kỳ');
   };
-  
+
   // Dừng timer kiểm tra kết nối
   const stopConnectionCheckTimer = () => {
     if (connectionCheckTimer) {
@@ -189,32 +205,32 @@ export default function App() {
       addLog('Đã dừng timer kiểm tra kết nối');
     }
   };
-  
+
   // Xử lý khi thiết bị được kết nối lại từ BackgroundService
   const handleDeviceReconnected = async (reconnectedDevice: Device) => {
     addLog(`Thiết bị được kết nối lại từ background: ${reconnectedDevice.name}`);
-    
+
     // Kiểm tra nếu đã có thiết bị được đặt trước đó
     if (device && device.id === reconnectedDevice.id) {
       addLog('Đã có thiết bị này trong UI, không cần cập nhật lại');
       return;
     }
-    
+
     // Cập nhật trạng thái UI
     setDevice(reconnectedDevice);
-    
+
     // Thiết lập các đặc tính (characteristics) cần thiết
     try {
       // Thiết lập các đặc tính
       const { writeCharacteristic: writeChar, notifyCharacteristic: notifyChar } = await setupCharacteristics(reconnectedDevice, addLog);
-      
+
       // Cập nhật state
       setWriteCharacteristic(writeChar);
       setNotifyCharacteristic(notifyChar);
       setIsDiscoverService(true);
-      
+
       addLog('Đã thiết lập lại các đặc tính sau khi kết nối lại');
-      
+
       // Bắt đầu lại các đo lường nếu trước đó đang đo
       if (measuring) {
         addLog('Tự động bắt đầu lại đo SpO2 sau khi kết nối lại');
@@ -222,7 +238,7 @@ export default function App() {
           startMeasurementLocal();
         }, 1000);
       }
-      
+
       if (measuringHeartRate) {
         addLog('Tự động bắt đầu lại đo nhịp tim sau khi kết nối lại');
         setTimeout(() => {
@@ -259,13 +275,13 @@ export default function App() {
         } else {
           addLog("✅ Bluetooth đã sẵn sàng!");
           setBluetoothReady(true);
-          
+
           // Thiết lập callback log cho BackgroundService
           backgroundService.setLogCallback(addLog);
-          
+
           // Thiết lập callback khi thiết bị được kết nối lại
           backgroundService.setReconnectionCallback(handleDeviceReconnected);
-          
+
           // Khi khởi động app, tự động tìm và kết nối lại thiết bị cũ
           const lastDevice = getLastConnectedDevice();
           if (lastDevice) {
@@ -279,16 +295,16 @@ export default function App() {
     };
 
     setupBluetooth();
-    
+
     // Theo dõi trạng thái Bluetooth
     const bluetoothStateSubscription = manager.onStateChange((state) => {
       addLog(`Trạng thái Bluetooth thay đổi: ${state}`);
-      
+
       if (state === 'PoweredOn') {
         // Bluetooth vừa được bật
         addLog('Bluetooth vừa được bật. Đang thử kết nối lại thiết bị cũ...');
         setBluetoothReady(true);
-        
+
         // Tự động tìm và kết nối lại thiết bị cũ
         const lastDevice = getLastConnectedDevice();
         if (lastDevice) {
@@ -299,7 +315,7 @@ export default function App() {
         // Bluetooth vừa bị tắt
         addLog('Bluetooth vừa bị tắt. Các kết nối sẽ bị mất.');
         setBluetoothReady(false);
-        
+
         // Reset trạng thái UI
         if (device) {
           addLog('Đặt lại trạng thái UI do Bluetooth bị tắt');
@@ -312,7 +328,7 @@ export default function App() {
         }
       }
     }, true);
-    
+
     // Thiết lập kiểm tra kết nối định kỳ
     const connectionCheckInterval = setInterval(() => {
       if (device) {
@@ -341,7 +357,7 @@ export default function App() {
         // Thông báo cho BackgroundService trước khi ngắt kết nối
         // Đặt trước để đảm bảo background service không cố gắng duy trì kết nối
         backgroundService.setCurrentDevice(null);
-        
+
         // Dừng đo lường nếu đang đo
         if (measuring) {
           try {
@@ -350,7 +366,7 @@ export default function App() {
             addLog(`Lỗi khi dừng đo: ${e}`);
           }
         }
-        
+
         // Hủy đăng ký các subscription
         if (notificationSubscription) {
           try {
@@ -360,7 +376,7 @@ export default function App() {
           }
           setNotificationSubscription(null);
         }
-        
+
         // Hủy các subscription bổ sung
         for (const sub of additionalSubscriptions) {
           try {
@@ -370,7 +386,7 @@ export default function App() {
           }
         }
         setAdditionalSubscriptions([]);
-        
+
         // Dừng polling nếu đang chạy
         if (pollingIntervalId) {
           clearInterval(pollingIntervalId);
@@ -385,7 +401,7 @@ export default function App() {
           addLog(`Lỗi khi ngắt kết nối thiết bị: ${disconnectError}`);
           // Tiếp tục để reset state ngay cả khi ngắt kết nối thất bại
         }
-        
+
         // Reset state
         setDevice(null);
         setWriteCharacteristic(null);
@@ -399,7 +415,7 @@ export default function App() {
       }
     } catch (error) {
       addLog(`Lỗi khi ngắt kết nối: ${error}`);
-      
+
       // Reset state ngay cả khi có lỗi
       setDevice(null);
       setWriteCharacteristic(null);
@@ -410,7 +426,7 @@ export default function App() {
       setHrValue(null);
       setMeasuring(false);
       setMeasuringHeartRate(false);
-      
+
       // Đảm bảo BackgroundService cũng được reset
       backgroundService.setCurrentDevice(null);
     }
@@ -423,7 +439,7 @@ export default function App() {
         addLog("❌ Bluetooth chưa sẵn sàng!");
         return;
       }
-      
+
       setScanning(true);
       setDevices([]);
       addLog("Đang quét tìm thiết bị...");
@@ -462,32 +478,32 @@ export default function App() {
       setScanning(false);
     }
   };
-  
+
   // Scan và kết nối tự động với thiết bị đã kết nối trước đó
   const scanAndConnect = async () => {
     if (!bluetoothReady) {
       addLog("⚠️ Bluetooth chưa sẵn sàng!");
       return;
     }
-    
+
     if (scanning) {
       addLog("⚠️ Đang quét. Vui lòng đợi...");
       return;
     }
-    
+
     const lastDevice = getLastConnectedDevice();
     if (!lastDevice) {
       addLog("Không có thông tin thiết bị đã kết nối trước đó");
       return;
     }
-    
+
     setScanning(true);
     addLog(`Đang quét tìm thiết bị đã kết nối trước đó: ${lastDevice.name} (${lastDevice.id})...`);
-    
+
     try {
       // Dừng bất kỳ quá trình quét nào đang diễn ra
       manager.stopDeviceScan();
-      
+
       // Bắt đầu quét
       manager.startDeviceScan(null, { allowDuplicates: false }, async (error, device) => {
         if (error) {
@@ -495,30 +511,30 @@ export default function App() {
           setScanning(false);
           return;
         }
-        
+
         // Kiểm tra xem có phải thiết bị cần tìm không
         if (device && (device.id === lastDevice.id || (device.name && device.name.includes("R12M")))) {
           addLog(`Tìm thấy thiết bị đã kết nối trước đó: ${device.name} (${device.id})`);
-          
+
           // Dừng quét
           manager.stopDeviceScan();
           setScanning(false);
-          
+
           // Kết nối với thiết bị
           try {
             addLog(`Đang kết nối với thiết bị ${device.name || 'Không tên'} (${device.id})...`);
             const connectedDevice = await connectToDevice(device, addLog);
-            
+
             if (connectedDevice) {
               addLog(`✅ Đã kết nối với thiết bị ${connectedDevice.name || 'Không tên'} (${connectedDevice.id})`);
               setDevice(connectedDevice);
-              
+
               // Thông báo cho BackgroundService về thiết bị đã kết nối
               backgroundService.setCurrentDevice(connectedDevice);
-              
+
               // Thiết lập các đặc tính (characteristics) cần thiết
               const { writeCharacteristic, notifyCharacteristic } = await setupCharacteristics(connectedDevice, addLog);
-              
+
               setWriteCharacteristic(writeCharacteristic);
               setNotifyCharacteristic(notifyCharacteristic);
             }
@@ -527,7 +543,7 @@ export default function App() {
           }
         }
       });
-      
+
       // Dừng quét sau 10 giây
       setTimeout(() => {
         if (scanning) {
@@ -550,12 +566,12 @@ export default function App() {
         checkDeviceConnection();
       }
     }, 15000);
-    
+
     // Kiểm tra ngay lập tức khi component mount hoặc device thay đổi
     if (device) {
       checkDeviceConnection();
     }
-    
+
     return () => clearInterval(checkConnectionInterval);
   }, [device]);
 
@@ -929,109 +945,146 @@ export default function App() {
     };
   }, [pollingIntervalId, notificationSubscription, additionalSubscriptions]);
 
+  // Hàm để mở màn hình quản lý giấc ngủ
+  const openSleepManagement = () => {
+    setShowSleepScreen(true);
+  };
+
+  // Hàm để đóng màn hình quản lý giấc ngủ
+  const closeSleepManagement = () => {
+    setShowSleepScreen(false);
+  };
+
   return (
     <View style={styles.container}>
-      <Text style={styles.title}>Ứng dụng Đo SpO2 qua Nhẫn Thông Minh</Text>
-      <TouchableOpacity
-        style={styles.button}
-        onPress={scanDevices}
-        disabled={scanning || device !== null}
-      >
-        <Text style={styles.buttonText}>
-          {scanning ? 'Đang quét...' : device ? 'Đã kết nối' : 'Quét thiết bị'}
-        </Text>
-      </TouchableOpacity>
+      {showSleepScreen ? (
+        <SleepScreen device={device} onClose={closeSleepManagement} />
+      ) : (
+        <>
+          <Text style={styles.title}>Ứng dụng Đo SpO2 qua Nhẫn Thông Minh</Text>
+          <View style={styles.tabContainer}>
+            {Object.values(TABS).map(tab => (
+              <TouchableOpacity
+                key={tab}
+                style={[styles.tabButton, currentTab === tab && styles.activeTabButton]}
+                onPress={() => setCurrentTab(tab)}
+              >
+                <Text style={[styles.tabButtonText, currentTab === tab && styles.activeTabButtonText]}>{tab}</Text>
+              </TouchableOpacity>
+            ))}
+          </View>
 
-      {devices.length > 0 && (
-        <View style={styles.deviceList}>
-          <Text style={styles.sectionTitle}>Thiết bị đã tìm thấy:</Text>
-          {devices.map(device => (
-            <TouchableOpacity
-              key={device.id}
-              style={styles.deviceItem}
-              onPress={() => connectToDevice(device, addLog).then((connectedDevice) => {
-                if (connectedDevice) {
-                  setDevice(connectedDevice);
-                  addLog('Đã kết nối thành công!');
+          {currentTab === TABS.HOME && (
+            <>
+              <TouchableOpacity
+                style={styles.button}
+                onPress={scanDevices}
+                disabled={scanning || device !== null}
+              >
+                <Text style={styles.buttonText}>
+                  {scanning ? 'Đang quét...' : device ? 'Đã kết nối' : 'Quét thiết bị'}
+                </Text>
+              </TouchableOpacity>
+
+              {devices.length > 0 && (
+                <View style={styles.deviceList}>
+                  <Text style={styles.sectionTitle}>Thiết bị đã tìm thấy:</Text>
+                  {devices.map(device => (
+                    <TouchableOpacity
+                      key={device.id}
+                      style={styles.deviceItem}
+                      onPress={() => connectToDevice(device, addLog).then((connectedDevice) => {
+                        if (connectedDevice) {
+                          setDevice(connectedDevice);
+                          addLog('Đã kết nối thành công!');
+
+                          // Cập nhật thiết bị hiện tại cho BackgroundService
+                          backgroundService.setCurrentDevice(connectedDevice);
+
+                          // Thiết lập các đặc tính
+                          setupCharacteristics(connectedDevice, addLog)
+                            .then(({ writeCharacteristic: wChar, notifyCharacteristic: nChar }) => {
+                              if (wChar) setWriteCharacteristic(wChar);
+                              if (nChar) setNotifyCharacteristic(nChar);
+                              setBluetoothReady(true);
+                              setIsDiscoverService(true); // Cập nhật trạng thái đã phát hiện service
+                            });
+                        }
+                      })}
+                      disabled={device === null}
+                    >
+                      <Text style={styles.deviceName}>
+                        {device.name || 'Không có tên'}
+                        <Text style={styles.deviceId}> ({device.id})</Text>
+                      </Text>
+                    </TouchableOpacity>
+                  ))}
+                </View>
+              )}
+
+              {device && (
+                <View style={styles.measurementContainer}>
+                  <Text style={styles.deviceName}>
+                    Thiết bị: {device.name || 'Không tên'} ({device.id})
+                  </Text>
+
+                  <View style={styles.resultContainer}>
+                    <Text style={styles.resultLabel}>SpO2:</Text>
+                    <Text style={styles.resultValue}>
+                      {spo2Value !== null ? `${spo2Value}%` : '--'}
+                    </Text>
+                  </View>
+
+                  <View style={styles.resultContainer}>
+                    <Text style={styles.resultLabel}>Nhịp tim:</Text>
+                    <Text style={styles.resultValue}>
+                      {prValue !== null ? `${prValue} BPM` : '--'}
+                    </Text>
+                  </View>
+
+                  <TouchableOpacity
+                    style={[styles.buttonAction, measuring ? styles.buttonMeasuring : null]}
+                    onPress={measuring ? stopMeasurementLocal : startMeasurementLocal}
+                    disabled={!isDiscoverService}
+                  >
+                    <Text style={styles.buttonText}>
+                      {measuring ? 'Dừng đo' : 'Bắt đầu đo'}
+                    </Text>
+                  </TouchableOpacity>
+
+                  <TouchableOpacity
+                    style={[styles.buttonAction, measuringHeartRate ? styles.buttonMeasuring : null]}
+                    onPress={measuringHeartRate ? stopHeartRateMeasurementLocal : startHeartRateMeasurementLocal}
+                    disabled={!isDiscoverService}
+                  >
+                    <Text style={styles.buttonText}>
+                      {measuringHeartRate ? 'Dừng đo nhịp tim' : 'Bắt đầu đo nhịp tim'}
+                    </Text>
+                  </TouchableOpacity>
                   
-                  // Cập nhật thiết bị hiện tại cho BackgroundService
-                  backgroundService.setCurrentDevice(connectedDevice);
+                  {/* Thêm nút Quản lý giấc ngủ */}
+                  <TouchableOpacity
+                    style={styles.buttonSleep}
+                    onPress={openSleepManagement}
+                    disabled={!isDiscoverService}
+                  >
+                    <Text style={styles.buttonText}>Quản lý giấc ngủ</Text>
+                  </TouchableOpacity>
 
-                  // Thiết lập các đặc tính
-                  setupCharacteristics(connectedDevice, addLog)
-                    .then(({ writeCharacteristic: wChar, notifyCharacteristic: nChar }) => {
-                      if (wChar) setWriteCharacteristic(wChar);
-                      if (nChar) setNotifyCharacteristic(nChar);
-                      setBluetoothReady(true);
-                      setIsDiscoverService(true); // Cập nhật trạng thái đã phát hiện service
-                    });
-                }
-              })}
-              disabled={device === null}
-            >
-              <Text style={styles.deviceName}>
-                {device.name || 'Không có tên'}
-                <Text style={styles.deviceId}> ({device.id})</Text>
-              </Text>
-            </TouchableOpacity>
-          ))}
-        </View>
+                  <TouchableOpacity
+                    style={[styles.buttonDisconnect]}
+                    onPress={disconnectDeviceLocal}
+                  >
+                    <Text style={styles.buttonText}>Ngắt kết nối</Text>
+                  </TouchableOpacity>
+                </View>
+              )}
+
+              {/* Phần hiển thị log đã bị loại bỏ */}
+            </>
+          )}
+        </>
       )}
-
-      {device && (
-        <View style={styles.measurementContainer}>
-          <Text style={styles.deviceName}>
-            Thiết bị: {device.name || 'Không tên'} ({device.id})
-          </Text>
-
-          <View style={styles.resultContainer}>
-            <Text style={styles.resultLabel}>SpO2:</Text>
-            <Text style={styles.resultValue}>
-              {spo2Value !== null ? `${spo2Value}%` : '--'}
-            </Text>
-          </View>
-
-          <View style={styles.resultContainer}>
-            <Text style={styles.resultLabel}>Nhịp tim:</Text>
-            <Text style={styles.resultValue}>
-              {prValue !== null ? `${prValue} BPM` : '--'}
-            </Text>
-          </View>
-
-          <TouchableOpacity
-            style={[styles.buttonAction, measuring ? styles.buttonMeasuring : null]}
-            onPress={measuring ? stopMeasurementLocal : startMeasurementLocal}
-            disabled={!isDiscoverService}
-          >
-            <Text style={styles.buttonText}>
-              {measuring ? 'Dừng đo' : 'Bắt đầu đo'}
-            </Text>
-          </TouchableOpacity>
-
-          <TouchableOpacity
-            style={[styles.buttonAction, measuringHeartRate ? styles.buttonMeasuring : null]}
-            onPress={measuringHeartRate ? stopHeartRateMeasurementLocal : startHeartRateMeasurementLocal}
-            disabled={!isDiscoverService}
-          >
-            <Text style={styles.buttonText}>
-              {measuringHeartRate ? 'Dừng đo nhịp tim' : 'Bắt đầu đo nhịp tim'}
-            </Text>
-          </TouchableOpacity>
-
-          <TouchableOpacity
-            style={[styles.buttonDisconnect]}
-            onPress={disconnectDeviceLocal}
-          >
-            <Text style={styles.buttonText}>Ngắt kết nối</Text>
-          </TouchableOpacity>
-        </View>
-      )}
-
-      <ScrollView style={styles.logContainer}>
-        {logs.map((log, index) => (
-          <Text key={index} style={styles.logText}>{log}</Text>
-        ))}
-      </ScrollView>
     </View>
   );
 }
@@ -1047,6 +1100,26 @@ const styles = StyleSheet.create({
     fontWeight: 'bold',
     marginBottom: 20,
     textAlign: 'center',
+  },
+  tabContainer: {
+    flexDirection: 'row',
+    justifyContent: 'space-around',
+    marginBottom: 20,
+  },
+  tabButton: {
+    padding: 10,
+    borderRadius: 5,
+    backgroundColor: '#e0e0e0',
+  },
+  activeTabButton: {
+    backgroundColor: '#2196F3',
+  },
+  tabButtonText: {
+    color: '#000',
+    fontWeight: 'bold',
+  },
+  activeTabButtonText: {
+    color: '#fff',
   },
   button: {
     backgroundColor: '#2196F3',
@@ -1071,6 +1144,13 @@ const styles = StyleSheet.create({
   },
   buttonDisconnect: {
     backgroundColor: '#607D8B',
+    padding: 15,
+    borderRadius: 5,
+    alignItems: 'center',
+    marginVertical: 5,
+  },
+  buttonSleep: {
+    backgroundColor: '#9C27B0',
     padding: 15,
     borderRadius: 5,
     alignItems: 'center',

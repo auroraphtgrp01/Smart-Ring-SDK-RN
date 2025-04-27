@@ -1,6 +1,6 @@
 import { Device } from 'react-native-ble-plx';
 import * as base64 from 'base64-js';
-import { SERVICE_UUID, NOTIFY_UUID } from './constants';
+import { SERVICE_UUID, NOTIFY_UUID } from '../constants';
 
 export interface MeasurementParams {
   device: Device | null;
