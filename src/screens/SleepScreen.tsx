@@ -3,10 +3,10 @@ import { StyleSheet, View, Text, TouchableOpacity, ScrollView, Alert } from 'rea
 import { Device } from 'react-native-ble-plx';
 import * as base64 from 'base64-js';
 import { SERVICE_UUID, WRITE_UUID, NOTIFY_UUID } from '../constants';
-import { 
-  calculateCRC16, 
-  createSleepDataRequest, 
-  bytesToHexString, 
+import {
+  calculateCRC16,
+  createSleepDataRequest,
+  bytesToHexString,
   parseSleepData,
   SleepDataRecord,
   createHealthDataConfirmation,
@@ -38,12 +38,12 @@ const SleepScreen: React.FC<SleepScreenProps> = ({ device, onClose }) => {
   const handleSleepDataResponse = (data: Uint8Array) => {
     const hexData = bytesToHexString(data);
     addLog(`Nhận dữ liệu: ${hexData}`);
-    
+
     // Log chi tiết từng byte
     console.log('[SLEEP_DATA_RECEIVED] Dữ liệu nhận từ nhẫn:');
     console.log(`- Độ dài: ${data.length} bytes`);
     console.log(`- Dữ liệu HEX: ${hexData}`);
-    
+
     // Log từng byte với index
     console.log('- Chi tiết từng byte:');
     data.forEach((byte, index) => {
@@ -53,7 +53,7 @@ const SleepScreen: React.FC<SleepScreenProps> = ({ device, onClose }) => {
     // Phân tích dữ liệu
     const parsedData = parseSleepData(data);
     console.log('[SLEEP_DATA_PARSED] Dữ liệu đã phân tích:', parsedData);
-    
+
     // Lưu dữ liệu nhận được
     const timestamp = new Date().toISOString();
     const sleepRecord: SleepDataRecord = {
@@ -62,10 +62,10 @@ const SleepScreen: React.FC<SleepScreenProps> = ({ device, onClose }) => {
       parsedData: parsedData,
       error: parsedData.error
     };
-    
+
     console.log('[SLEEP_RECORD] Bản ghi giấc ngủ mới:', JSON.stringify(sleepRecord, null, 2));
     setSleepData(prev => [...prev, sleepRecord]);
-    
+
     // Kiểm tra nếu nhận được phản hồi đặc biệt như "không có dữ liệu"
     if (parsedData.statusCode === 0xFF && parsedData.message) {
       addLog(parsedData.message);
@@ -74,12 +74,26 @@ const SleepScreen: React.FC<SleepScreenProps> = ({ device, onClose }) => {
       }
       Alert.alert('Thông báo từ nhẫn', parsedData.message);
     }
-    
+
     // Dừng trạng thái loading
     setIsLoading(false);
   };
 
   // Lấy thông tin giấc ngủ từ nhẫn
+  // Lấy thông tin giấc ngủ từ nhẫn
+  const createGPPacket = (): Uint8Array => {
+    // GP = 47 50 trong ASCII
+    const headerData = [0x02, 0x03, 0x08, 0x00]; // Header 0x0203, length 8
+    const cmdData = [0x47, 0x50]; // "GP" trong ASCII
+    const packetData = [...headerData, ...cmdData];
+
+    // Tính CRC
+    const crc = calculateCRC16(packetData);
+    const crcLow = crc & 0xFF;
+    const crcHigh = (crc >> 8) & 0xFF;
+
+    return new Uint8Array([...packetData, crcLow, crcHigh]);
+  };
   const getSleepData = async () => {
     if (!device) {
       console.error('[SLEEP_ERROR] Không có thiết bị được kết nối');
@@ -91,7 +105,7 @@ const SleepScreen: React.FC<SleepScreenProps> = ({ device, onClose }) => {
       console.log('\n======================================');
       console.log('[SLEEP_REQUEST] Bắt đầu gửi yêu cầu lấy dữ liệu giấc ngủ');
       console.log(`[SLEEP_DEVICE] Thông tin thiết bị: ID=${device.id}, Name=${device.name}`);
-      
+
       setIsLoading(true);
       addLog('Bắt đầu lấy dữ liệu giấc ngủ...');
 
@@ -99,7 +113,7 @@ const SleepScreen: React.FC<SleepScreenProps> = ({ device, onClose }) => {
       console.log('[SLEEP_MONITOR] Thiết lập lắng nghe thông báo từ nhẫn');
       console.log(`- Service UUID: ${SERVICE_UUID}`);
       console.log(`- Notify UUID: ${NOTIFY_UUID}`);
-      
+
       const subscription = device.monitorCharacteristicForService(
         SERVICE_UUID,
         NOTIFY_UUID,
@@ -116,78 +130,74 @@ const SleepScreen: React.FC<SleepScreenProps> = ({ device, onClose }) => {
             console.log('[SLEEP_NOTIFY] Nhận được thông báo từ nhẫn');
             console.log(`- Characteristic UUID: ${characteristic.uuid}`);
             console.log(`- Characteristic value (base64): ${characteristic.value}`);
-            
+
             const data = base64.toByteArray(characteristic.value);
             console.log(`- Đã chuyển đổi từ base64 sang array (${data.length} bytes)`);
-            
+
             // Log từng byte để debug chi tiết
             console.log('- Chi tiết từng byte:');
             data.forEach((byte, index) => {
               console.log(`  Byte ${index}: ${byte.toString(16).padStart(2, '0')} (${byte})`);
             });
-            
+
             handleSleepDataResponse(data);
-            
-            // Không ngắt kết nối ngay để có thể nhận nhiều gói dữ liệu
-            // Chỉ dừng lắng nghe sau khi hoàn thành quá trình nhận dữ liệu
-            // Làm vậy để đảm bảo có thể nhận tất cả dữ liệu từ nhẫn
           }
         }
       );
-      
-      // Tuần tự gửi tất cả các gói dữ liệu theo thứ tự trong log debug frida
+
+      // Hàm gửi gói dữ liệu với log
       const sendPacketWithLog = async (payload: Uint8Array, name: string) => {
         const hexPayload = bytesToHexString(payload);
-        
+
         console.log(`[PACKET_${name}] Gửi gói dữ liệu ${name}:`);
         console.log(`- Độ dài: ${payload.length} bytes`);
         console.log(`- Dữ liệu HEX: ${hexPayload}`);
-        console.log('- Chi tiết từng byte:');
-        payload.forEach((byte, index) => {
-          console.log(`  Byte ${index}: ${byte.toString(16).padStart(2, '0')} (${byte})`);
-        });
-        
+
         addLog(`Gửi gói dữ liệu ${name}: ${hexPayload}`);
-        
+
         await device.writeCharacteristicWithResponseForService(
           SERVICE_UUID,
           WRITE_UUID,
           base64.fromByteArray(payload)
         );
-        
+
         console.log(`[PACKET_${name}] Đã gửi gói dữ liệu thành công`);
-        
+
         // Thêm độ trễ giữa các gói dữ liệu
         await new Promise(resolve => setTimeout(resolve, 200));
       };
-      
-      // 1. Gửi gói dữ liệu ngày giờ (0x0100)
+
+      // 0. Gửi gói GP (0x0203) - nếu có
+      const gpPayload = new Uint8Array([0x47, 0x50]); // "GP" - Từ log
+      await sendPacketWithLog(gpPayload, 'GP');
+
+      // 1. Gửi gói DateTime (0x0100)
       const dateTimePayload = createDateTimePacket();
       await sendPacketWithLog(dateTimePayload, 'DATE_TIME');
-      
-      // 2. Gửi gói dữ liệu GF (0x0201)
+
+      // 2. Gửi gói GF (0x0201)
       const gfPayload = createGFPacket();
       await sendPacketWithLog(gfPayload, 'GF');
-      
-      // 3. Gửi gói dữ liệu 0x021b
+
+      // 3. Gửi gói 0x021b
       const packet021b = create021bPacket();
       await sendPacketWithLog(packet021b, '021B');
-      
-      // 4. Gửi gói dữ liệu GC (0x0200) - lặp lại 3 lần
+
+      // 4. Gửi gói GC (0x0200) - lặp lại 3 lần theo log
       const gcPayload = createGCPacket();
       for (let i = 0; i < 3; i++) {
-        await sendPacketWithLog(gcPayload, `GC_${i+1}`);
+        await sendPacketWithLog(gcPayload, `GC_${i + 1}`);
       }
-      
-      // 5. Gửi gói dữ liệu CF (0x0207)
+
+      // 5. Gửi gói CF (0x0207)
       const cfPayload = createCFPacket();
       await sendPacketWithLog(cfPayload, 'CF');
-      
-      // 6. Gửi gói dữ liệu yêu cầu giấc ngủ (0x0502)
+
+      // 6. Gửi gói yêu cầu lấy dữ liệu giấc ngủ (0x0502)
       const sleepRequestPayload = createSleepDataRequest();
       await sendPacketWithLog(sleepRequestPayload, 'SLEEP_REQUEST');
-      
-      // 7. Gửi gói dữ liệu xác nhận 0x0580
+
+      // 7. Gửi gói xác nhận (0x0580)
       const confirmationPayload = createHealthDataConfirmation();
       await sendPacketWithLog(confirmationPayload, 'CONFIRMATION');
 
@@ -206,7 +216,7 @@ const SleepScreen: React.FC<SleepScreenProps> = ({ device, onClose }) => {
       console.error('[SLEEP_ERROR] Lỗi khi gửi yêu cầu:', error);
       console.error(`- Message: ${error?.message || 'Không xác định'}`);
       console.error(`- Stack: ${error?.stack || 'Không có thông tin stack'}`);
-      
+
       setIsLoading(false);
       addLog(`Lỗi: ${error?.message || 'Không xác định'}`);
       Alert.alert('Lỗi', `Không thể lấy dữ liệu giấc ngủ: ${error?.message || 'Không xác định'}`);
@@ -224,7 +234,7 @@ const SleepScreen: React.FC<SleepScreenProps> = ({ device, onClose }) => {
 
       <View style={styles.trackingContainer}>
         <Text style={styles.sectionTitle}>Đồng Bộ Dữ Liệu Giấc Ngủ</Text>
-        <TouchableOpacity 
+        <TouchableOpacity
           style={[styles.trackingButton, isLoading ? styles.stopButton : styles.startButton]}
           onPress={getSleepData}
           disabled={isLoading}
@@ -234,8 +244,8 @@ const SleepScreen: React.FC<SleepScreenProps> = ({ device, onClose }) => {
           </Text>
         </TouchableOpacity>
         <Text style={styles.trackingInfo}>
-          {isLoading 
-            ? 'Đang lấy dữ liệu giấc ngủ từ nhẫn, vui lòng đợi...' 
+          {isLoading
+            ? 'Đang lấy dữ liệu giấc ngủ từ nhẫn, vui lòng đợi...'
             : 'Nhấn nút để lấy dữ liệu giấc ngủ từ nhẫn'}
         </Text>
       </View>

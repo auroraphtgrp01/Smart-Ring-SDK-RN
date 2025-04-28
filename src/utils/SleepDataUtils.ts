@@ -206,185 +206,161 @@ export const bytesToHexString = (data: Uint8Array | number[]): string => {
  * @param data Mảng byte dữ liệu nhận được từ nhẫn
  * @returns Đối tượng chứa thông tin giấc ngủ đã được phân tích
  */
-export const parseSleepData = (data: Uint8Array): any => {
+// Cải tiến hàm parseSleepData trong utils/SleepDataUtils.ts
+export function parseSleepData(data: Uint8Array) {
   try {
-    // Kiểm tra xem dữ liệu có đủ dài không
-    if (data.length < 6) {
-      return { 
-        error: 'Dữ liệu không hợp lệ: quá ngắn',
-        details: `Độ dài thực tế: ${data.length} bytes, yêu cầu tối thiểu: 6 bytes`,
-        rawData: bytesToHexString(data)
-      };
-    }
-
-    // Xử lý gói phản hồi theo nhiều định dạng khác nhau
-    
-    // 1. Xử lý gói phản hồi ACK với format 05 XX 07 00 FF YY ZZ
-    // Đây là gói ACK tiêu chuẩn phản hồi sau mỗi lệnh gửi đi
-    if (data.length === 7 && data[2] === 0x07 && data[3] === 0x00 && data[4] === 0xff) {
-      const dataType = (data[0] << 8) | data[1];
+    // Kiểm tra xem dữ liệu có hợp lệ không
+    if (!data || data.length < 6) {
       return {
-        dataType,
+        error: 'Dữ liệu không hợp lệ hoặc không đủ độ dài',
         statusCode: 0xFF,
-        isAck: true,
-        message: `Phản hồi xác nhận cho gói 0x${dataType.toString(16).padStart(4, '0').toUpperCase()}`,
-        rawData: bytesToHexString(data)
+        message: 'Dữ liệu không hợp lệ',
+        detail: `Độ dài dữ liệu: ${data ? data.length : 0} bytes`
       };
     }
 
-    // 2. Kiểm tra xem có phải định dạng dữ liệu giấc ngủ với header đặc biệt "af fa d4 00" không
-    // (Dựa trên log DataUnpack.unpackHealthData)
-    if (data.length > 20 && data[0] === 0xaf && data[1] === 0xfa && data[2] === 0xd4 || data[2] === 0x54) {
-      return parseSleepDataWithAFHeader(data);
-    }
+    // Kiểm tra mã phản hồi
+    const header = data[0] << 8 | data[1]; // 2 byte đầu là mã lệnh
+    const statusCode = data[2];
     
-    // 3. Kiểm tra header định dạng cũ (0x05 0x04)
-    if (data[0] === 0x05 && data[1] === 0x04) {
-      // Kiểm tra độ dài gói dữ liệu
-      const declaredLength = data[2] | (data[3] << 8);
-      
-      // Kiểm tra và xử lý gói phản hồi 05 04 07 00 ff ca 63
-      // Đây là gói đặc biệt với length = 7 và mã trạng thái FF
-      if (data.length === 7 && declaredLength === 7 && data[4] === 0xff) {
+    // Nếu là phản hồi cho lệnh 0x0502 (1282) - lệnh lấy dữ liệu giấc ngủ
+    if (header === 0x0502) {
+      if (statusCode === 0) {
+        // Nếu có dữ liệu giấc ngủ
+        // Phân tích chi tiết dữ liệu nhận được
+        // ...
+        const sleepRecords = parseSleepRecords(data.slice(3));
+        
         return {
-          dataType: 0x0504,
-          statusCode: 0xFF,
-          message: 'Không có dữ liệu giấc ngủ khả dụng',
-          detail: 'Thiết bị thông báo không có dữ liệu giấc ngủ. Hãy đảm bảo đeo nhẫn khi ngủ và thử lại sau.'
+          dataType: header,
+          statusCode: statusCode,
+          message: 'Nhận dữ liệu giấc ngủ thành công',
+          records: sleepRecords
+        };
+      } else if (statusCode === 0xFF) {
+        // Không có dữ liệu giấc ngủ
+        return {
+          dataType: header,
+          statusCode: statusCode,
+          message: 'Không có dữ liệu giấc ngủ',
+          detail: 'Nhẫn không ghi nhận dữ liệu giấc ngủ trong thời gian gần đây'
+        };
+      } else {
+        // Các mã phản hồi khác
+        return {
+          dataType: header,
+          statusCode: statusCode,
+          message: `Mã phản hồi không xác định: ${statusCode}`,
+          detail: `Dữ liệu đầy đủ: ${bytesToHexString(data)}`
         };
       }
-      
-      // Nếu đây là gói ACK (phản hồi ban đầu), không có dữ liệu giấc ngủ thực tế
-      if (data.length <= 8) {
-        return {
-          dataType: 0x0504,
-          isAck: true,
-          message: 'Gói ACK, chờ dữ liệu giấc ngủ thực tế'
-        };
-      }
-      
-      // Phân tích dữ liệu giấc ngủ thực tế
-      const sleepData = data.slice(4, data.length - 2);
-      return {
-        dataType: 0x0504,
-        sleepData: Array.from(sleepData),
-        rawSleepData: bytesToHexString(sleepData)
-      };
     }
     
-    // 4. Trường hợp còn lại: định dạng không được nhận dạng
-    return { 
-      error: `Định dạng dữ liệu không nhận dạng: ${bytesToHexString(data.slice(0, 4))}`,
-      dataType: (data[0] << 8) | data[1],
-      rawData: bytesToHexString(data)
-    };
-  } catch (error) {
-    return { 
-      error: 'Lỗi khi phân tích dữ liệu: ' + (error as Error).message,
-      rawData: bytesToHexString(data)
-    };
-  }
-};
-
-/**
- * Phân tích dữ liệu giấc ngủ với định dạng AF FA D4/54 header
- * Dựa trên cấu trúc từ log DataUnpack.unpackHealthData
- * @param data Mảng byte dữ liệu nhận được từ nhẫn
- * @returns Đối tượng chứa thông tin giấc ngủ đã được phân tích
- */
-const parseSleepDataWithAFHeader = (data: Uint8Array): any => {
-  try {
-    // Lấy múi giờ hiện tại (ms)
-    const timezoneOffset = new Date().getTimezoneOffset() * 60 * 1000;
-    
-    // Kiểm tra tiếp dữ liệu
-    if (data.length < 20) {
-      return {
-        error: 'Dữ liệu giấc ngủ quá ngắn',
-        rawData: bytesToHexString(data)
-      };
-    }
-    
-    // Bắt đầu phân tích dữ liệu giấc ngủ
-    let offset = 4; // Bỏ qua 4 byte header af fa d4/54 00
-    
-    // Lấy thời gian bắt đầu giấc ngủ từ 4 byte tiếp theo
-    const startTimestamp = readUint32(data, offset);
-    offset += 4;
-    
-    // Lấy thời gian kết thúc giấc ngủ từ 4 byte tiếp theo
-    const endTimestamp = readUint32(data, offset);
-    offset += 4;
-    
-    // Hai byte tiếp theo là giá trị đặc biệt thường là FF FF (có thể là marker)
-    offset += 2;
-    
-    // Các thông số giấc ngủ 
-    // 2 byte deepSleepTotal, 2 byte lightSleepTotal, 2 byte rapidEyeMovementTotal, ...
-    const deepSleepTotal = readUint16(data, offset);
-    offset += 2;
-    
-    const lightSleepTotal = readUint16(data, offset);
-    offset += 2;
-    
-    const rapidEyeMovementTotal = readUint16(data, offset);
-    offset += 2;
-    
-    // Khởi tạo mảng chứa các giai đoạn giấc ngủ
-    const sleepPhases: any[] = [];
-    
-    // Phân tích từng giai đoạn giấc ngủ (mỗi giai đoạn 8 byte)
-    // Cấu trúc: 1 byte mã (241=deep, 242=light, 243=REM), 1 byte không sử dụng, 
-    // 4 byte timestamp, 2 byte độ dài (phút)
-    while (offset + 8 <= data.length) {
-      const sleepType = data[offset];
-      offset += 1;
-      
-      // Bỏ qua 1 byte không sử dụng
-      offset += 1;
-      
-      // Timestamp bắt đầu giai đoạn (4 byte)
-      const phaseStartTime = readUint32(data, offset);
-      offset += 4;
-      
-      // Độ dài của giai đoạn (phút)
-      const sleepLen = readUint16(data, offset);
-      offset += 2;
-      
-      // Thêm thông tin giai đoạn vào mảng
-      sleepPhases.push({
-        sleepType,
-        sleepStartTime: phaseStartTime * 1000, // Chuyển sang milliseconds
-        sleepLen,
-        sleepTypeName: getSleepTypeName(sleepType)
-      });
-    }
-    
-    // Kết quả phân tích
+    // Xử lý các loại phản hồi khác
     return {
-      dataType: 1284, // 0x0504 = Health_HistorySleep
-      data: [{
-        startTime: startTimestamp * 1000, // Chuyển sang milliseconds
-        endTime: endTimestamp * 1000,
-        deepSleepTotal,
-        lightSleepTotal,
-        rapidEyeMovementTotal,
-        wakeCount: 0, // Giá trị mặc định
-        deepSleepCount: 0xFFFF, // Giá trị đặc biệt từ log
-        lightSleepCount: 0,
-        wakeDuration: 0,
-        sleepData: sleepPhases,
-        sleepQuality: calculateSleepQuality(deepSleepTotal, lightSleepTotal, rapidEyeMovementTotal),
-      }],
-      rawData: bytesToHexString(data)
+      dataType: header,
+      statusCode: statusCode,
+      message: `Phản hồi cho lệnh: 0x${header.toString(16).padStart(4, '0')}`,
+      detail: `Dữ liệu đầy đủ: ${bytesToHexString(data)}`
     };
-  } catch (error) {
-    return { 
-      error: 'Lỗi khi phân tích dữ liệu định dạng AF: ' + (error as Error).message,
-      rawData: bytesToHexString(data)
+    
+  } catch (error: any) {
+    console.error('[PARSE_ERROR] Lỗi khi phân tích dữ liệu:', error);
+    return {
+      error: `Lỗi phân tích: ${error.message}`,
+      statusCode: 0xFF,
+      message: 'Lỗi khi phân tích dữ liệu',
+      detail: error.stack
     };
   }
-};
+}
+
+// Hàm phụ trợ để phân tích bản ghi giấc ngủ
+// Cải tiến hàm parseSleepRecords trong SleepDataUtils.ts
+function parseSleepRecords(data: Uint8Array) {
+  const records = [];
+  
+  // Tìm tất cả các đoạn bắt đầu bằng AF FA 54
+  let offset = 0;
+  while (offset < data.length - 4) {
+    // Tìm header AF FA 54
+    if (data[offset] === 0xAF && data[offset+1] === 0xFA && data[offset+2] === 0x54) {
+      const recordIndex = data[offset+3];
+      // Tách dữ liệu sau header
+      const recordData = parseSleepRecord(data, offset);
+      if (recordData) {
+        records.push({
+          index: recordIndex,
+          ...recordData
+        });
+      }
+      // Nhảy sang vị trí tiếp theo - nhảy ít nhất 20 byte, hoặc tùy vào cấu trúc thực tế
+      offset += 20;
+    } else {
+      offset++;
+    }
+  }
+  
+  return records;
+}
+
+// Hàm phụ trợ phân tích từng bản ghi giấc ngủ
+function parseSleepRecord(data: Uint8Array, offset: number) {
+  try {
+    // Đảm bảo có đủ byte để phân tích
+    if (offset + 16 > data.length) return null;
+    
+    // Format: af fa 54 00 7e f1 9e 2f c1 01 9f 2f ff ff 3e 01...
+    // Byte 4-7: startTime (little endian)
+    // Byte 8-11: endTime hoặc duration (little endian)
+    // Byte 12-13: thường là FF FF (marker)
+    // Byte 14-15: có thể là thông số giấc ngủ khác
+    
+    const startTime = (data[offset+7] << 24) | (data[offset+6] << 16) | (data[offset+5] << 8) | data[offset+4];
+    const endTime = (data[offset+11] << 24) | (data[offset+10] << 16) | (data[offset+9] << 8) | data[offset+8];
+    
+    // Phân tích thêm các dữ liệu khác tùy thuộc vào cấu trúc thực tế
+    // Từ byte 16 trở đi có thể là các phân đoạn giấc ngủ với format F1/F2/F3 + timestamp + duration
+    
+    // Phân tích các phân đoạn chi tiết từ byte 16 trở đi
+    const sleepSegments = [];
+    let segmentOffset = offset + 16;
+    while (segmentOffset < data.length - 8) {
+      const sleepType = data[segmentOffset];
+      
+      // Format: F1/F2/F3 + byte không dùng + 4 byte timestamp + 2 byte duration
+      if (sleepType === 0xF1 || sleepType === 0xF2 || sleepType === 0xF3) {
+        const segTime = (data[segmentOffset+5] << 24) | (data[segmentOffset+4] << 16) | 
+                       (data[segmentOffset+3] << 8) | data[segmentOffset+2];
+        const duration = (data[segmentOffset+7] << 8) | data[segmentOffset+6];
+        
+        sleepSegments.push({
+          type: sleepType,
+          typeName: getSleepTypeName(sleepType),
+          timestamp: segTime,
+          duration: duration, // phút
+          timeString: new Date(segTime * 1000).toISOString()
+        });
+        
+        segmentOffset += 8;
+      } else {
+        segmentOffset++;
+      }
+    }
+    
+    return {
+      startTime: startTime,
+      startTimeString: new Date(startTime * 1000).toISOString(),
+      endTime: endTime,
+      endTimeString: new Date(endTime * 1000).toISOString(),
+      sleepSegments: sleepSegments,
+      rawSegmentData: bytesToHexString(data.slice(offset, offset + 20))
+    };
+  } catch (error) {
+    console.error('[PARSE_ERROR] Lỗi khi phân tích dữ liệu bản ghi giấc ngủ:', error);
+    return null;
+  }
+}
 
 /**
  * Đọc số 32 bit không dấu từ mảng byte
@@ -416,16 +392,16 @@ const readUint16 = (data: Uint8Array, offset: number): number => {
  */
 const getSleepTypeName = (sleepType: number): string => {
   switch (sleepType) {
-    case 241: // 0xF1
+    case 0xF1:
       return 'Ngủ sâu';
-    case 242: // 0xF2
+    case 0xF2:
       return 'Ngủ nhẹ';
-    case 243: // 0xF3
-      return 'REM';
-    case 244: // 0xF4
+    case 0xF3:
+      return 'REM (Mắt chuyển động nhanh)';
+    case 0xF4:
       return 'Thức giấc';
     default:
-      return `Không xác định (${sleepType})`;
+      return `Không xác định (${sleepType.toString(16).toUpperCase()})`;
   }
 };
 
